@@ -186,24 +186,16 @@ class DesignLayoutDataset(Dataset):
         type_ids += [0] * (self.max_length - length)
         sample['type'] = torch.tensor(type_ids, dtype=torch.long).unsqueeze(-1)
         
-        # 不透明度 - 🔧 修复：需要离散化
+        # 不透明度
         if 'opacity' in item:
-            opacity_values = []
-            for i in range(length):
-                # 离散化到8个bins
-                discrete_val = int(item['opacity'][i] * 7)  # 0.0-1.0 -> 0-7
-                opacity_values.append(discrete_val)
-            opacity_values += [0] * (self.max_length - length)
-            sample['opacity'] = torch.tensor(opacity_values, dtype=torch.long).unsqueeze(-1)
+            opacity = item['opacity'][:length] + [0.0] * (self.max_length - length)
+            sample['opacity'] = torch.tensor(opacity, dtype=torch.float32).unsqueeze(-1)
         
-        # 颜色 - 🔧 修复：需要离散化RGB值
+        # 颜色
         if 'color' in item:
             colors = []
             for i in range(length):
-                rgb = item['color'][i]
-                # 离散化每个通道：0-255 -> 0-15
-                discrete_rgb = [int(c * 15 / 255) for c in rgb]
-                colors.append(discrete_rgb)
+                colors.append(item['color'][i])
             for _ in range(self.max_length - length):
                 colors.append([0, 0, 0])
             sample['color'] = torch.tensor(colors, dtype=torch.long)
@@ -317,11 +309,11 @@ class DesignLayoutDataset(Dataset):
             },
         }
         
-        # Opacity - 固定为8个bins
+        # Opacity - 🔧 修复：应该与bins保持一致
         if any('opacity' in item for item in self.data[:10]):
             input_columns['opacity'] = {
                 'type': 'categorical',
-                'input_dim': 8,  # 固定为8（与TF版本一致）
+                'input_dim': self.bins,  # 使用实际的bins数量(64)
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
@@ -462,7 +454,7 @@ def create_dataloader(
 
 
 if __name__ == "__main__":
-    data_path = "/home/dell/Project-HCL/BaseLine/flexdm_pt/data/crello_json"
+    data_path = "/home/dell/Project-HCL/BaseLine/flex-dm/data/crello_json"
     
     print("="*60)
     print("数据集测试")

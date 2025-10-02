@@ -1,6 +1,6 @@
 """
 PyTorch模型架构 - 完全修复版本
-严格对齐TensorFlow原始实现
+使用ModuleList替代ModuleDict，避免键冲突
 """
 
 import torch
@@ -67,7 +67,7 @@ class MultiHeadSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Transformer块(DeepSVG风格)"""
+    """Transformer块（DeepSVG风格）"""
     
     def __init__(
         self,
@@ -133,10 +133,10 @@ class TransformerBlocks(nn.Module):
         return x
 
 
-# ==================== Encoder(修复版本)====================
+# ==================== Encoder（修复版本）====================
 
 class Encoder(nn.Module):
-    """编码器 - 严格对齐TF版本"""
+    """编码器 - 使用ModuleList避免键冲突"""
     
     def __init__(
         self,
@@ -149,27 +149,26 @@ class Encoder(nn.Module):
         self.input_columns = input_columns
         self.embed_dim = embed_dim
         
-        # 使用列表存储层
+        # 使用列表而不是字典存储层
         self.emb_layers = nn.ModuleList()
         self.emb_keys = []
+        self.emb_types = []
+        self.emb_configs = []
         
         print("初始化Encoder:")
         for key, column in input_columns.items():
-            # 跳过非序列字段和demo_only字段
             if not column.get('is_sequence', False):
-                continue
-            if column.get('demo_only', False):
                 continue
             
             self.emb_keys.append(key)
+            self.emb_types.append(column['type'])
+            self.emb_configs.append(column)
             
             if column['type'] == 'categorical':
-                # +2 用于<MASK>和<UNUSED>标记
                 vocab_size = column['input_dim'] + 2
                 self.emb_layers.append(nn.Embedding(vocab_size, embed_dim))
                 print(f"  {key}: Embedding({vocab_size}, {embed_dim})")
             elif column['type'] == 'numerical':
-                # 数值类型需要额外的特殊标记嵌入
                 input_size = column['shape'][-1] if 'shape' in column else 1
                 self.emb_layers.append(nn.Linear(input_size, embed_dim))
                 print(f"  {key}: Linear({input_size}, {embed_dim})")
@@ -179,8 +178,51 @@ class Encoder(nn.Module):
         self.pos_embedding = nn.Embedding(max_length + 1, embed_dim)
         self.dropout = nn.Dropout(dropout)
     
+    # def forward(self, inputs: Dict[str, torch.Tensor]) -> tuple:
+    #     batch_size = inputs['length'].size(0)
+        
+    #     # 找到序列长度
+    #     seq_len = None
+    #     for key in self.emb_keys:
+    #         if key in inputs:
+    #             seq_len = inputs[key].size(1)
+    #             break
+        
+    #     if seq_len is None:
+    #         raise ValueError("未找到序列特征")
+        
+    #     # 编码每个特征
+    #     seq_embs = []
+    #     for idx, key in enumerate(self.emb_keys):
+    #         if key not in inputs:
+    #             continue
+            
+    #         x = inputs[key]
+    #         if key in ['color']:
+    #             x = x.float()
+    #         emb = self.emb_layers[idx](x)
+            
+    #         # 处理多维特征（如RGB）
+    #         if len(emb.shape) == 4:
+    #             emb = emb.sum(dim=2)
+            
+    #         seq_embs.append(emb)
+        
+    #     # 融合特征
+    #     seq = torch.stack(seq_embs).sum(dim=0)
+        
+    #     # 位置编码
+    #     positions = torch.arange(seq_len, device=seq.device).unsqueeze(0).expand(batch_size, -1)
+    #     seq = seq + self.pos_embedding(positions)
+    #     seq = self.dropout(seq)
+        
+    #     # 生成掩码
+    #     lengths = inputs['length'].squeeze(-1)
+    #     mask = torch.arange(seq_len, device=seq.device).unsqueeze(0) < lengths.unsqueeze(1)
+        
+    #     return seq, mask
     def forward(self, inputs: Dict[str, torch.Tensor]) -> tuple:
-        """前向传播"""
+        """修复了类型转换的forward方法"""
         batch_size = inputs['length'].size(0)
         
         # 找到序列长度
@@ -198,27 +240,33 @@ class Encoder(nn.Module):
         for idx, key in enumerate(self.emb_keys):
             if key not in inputs:
                 continue
+
+            if key=='uuid':
+                print("跳过 uuid 特征")
+                continue
             
             x = inputs[key]
             layer = self.emb_layers[idx]
             
-            # 根据层类型自动转换输入数据类型
+            # 🔧 关键修复：根据层类型自动转换输入数据类型
             if isinstance(layer, nn.Embedding):
+                # Embedding层需要Long类型
                 if x.dtype != torch.long:
                     x = x.long()
             elif isinstance(layer, nn.Linear):
+                # Linear层需要Float类型
                 if x.dtype != torch.float:
                     x = x.float()
             
             emb = layer(x)
             
-            # 处理多维特征(如RGB) - sum across feature dimension
-            if len(emb.shape) == 4:  # (B, S, 3, D)
-                emb = emb.sum(dim=2)  # -> (B, S, D)
+            # 处理多维特征（如RGB）
+            if len(emb.shape) == 4:
+                emb = emb.sum(dim=2)
             
             seq_embs.append(emb)
         
-        # 融合特征 - element-wise addition
+        # 融合特征
         seq = torch.stack(seq_embs).sum(dim=0)
         
         # 位置编码
@@ -233,26 +281,23 @@ class Encoder(nn.Module):
         return seq, mask
 
 
-# ==================== Decoder(修复版本)====================
+# ==================== Decoder（修复版本）====================
 
 class Decoder(nn.Module):
-    """解码器 - 严格对齐TF版本"""
+    """解码器 - 使用ModuleList避免键冲突"""
     
     def __init__(self, input_columns: Dict, embed_dim: int = 128):
         super().__init__()
         self.input_columns = input_columns
         
-        # 使用列表存储层
+        # 使用列表而不是字典存储层
         self.head_layers = nn.ModuleList()
         self.head_keys = []
         self.head_configs = []
         
         print("初始化Decoder:")
         for key, column in input_columns.items():
-            # 跳过非序列字段和demo_only字段
             if not column.get('is_sequence', False):
-                continue
-            if column.get('demo_only', False):
                 continue
             
             self.head_keys.append(key)
@@ -260,7 +305,6 @@ class Decoder(nn.Module):
             
             if column['type'] == 'categorical':
                 shape = column.get('shape', [1])
-                # 关键修复：输出维度 = shape[-1] * input_dim
                 output_dim = shape[-1] * column['input_dim']
                 self.head_layers.append(nn.Linear(embed_dim, output_dim))
                 print(f"  {key}: Linear({embed_dim}, {output_dim}) -> ({shape[-1]}, {column['input_dim']})")
@@ -277,6 +321,8 @@ class Decoder(nn.Module):
         batch_size, seq_len, _ = x.shape
         
         for idx, key in enumerate(self.head_keys):
+            if key=='uuid':
+                continue
             column = self.head_configs[idx]
             pred = self.head_layers[idx](x)
             
@@ -284,7 +330,6 @@ class Decoder(nn.Module):
                 shape = column.get('shape', [1])
                 num_features = shape[-1]
                 vocab_size = column['input_dim']
-                # Reshape: (B, S, num_features*vocab_size) -> (B, S, num_features, vocab_size)
                 pred = pred.view(batch_size, seq_len, num_features, vocab_size)
             
             outputs[key] = pred
@@ -345,12 +390,8 @@ class MFP(nn.Module):
         
         if missing_keys:
             print(f"警告: 缺失 {len(missing_keys)} 个键")
-            for key in missing_keys[:5]:
-                print(f"  - {key}")
         if unexpected_keys:
             print(f"警告: 多余 {len(unexpected_keys)} 个键")
-            for key in unexpected_keys[:5]:
-                print(f"  - {key}")
         
         print("✓ 权重加载完成")
 
@@ -358,75 +399,15 @@ class MFP(nn.Module):
 # ==================== 测试代码 ====================
 
 if __name__ == "__main__":
-    print("测试MFP模型(修复版本)\n")
+    print("测试MFP模型（修复版本）\n")
     
-    # 使用原始TF格式的input_columns
     input_columns = {
-        'type': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 6, 
-            'shape': [1]
-        },
-        'left': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 64, 
-            'shape': [1]
-        },
-        'top': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 64, 
-            'shape': [1]
-        },
-        'width': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 64, 
-            'shape': [1]
-        },
-        'height': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 64, 
-            'shape': [1]
-        },
-        'opacity': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 8, 
-            'shape': [1]
-        },
-        'color': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 16, 
-            'shape': [3]
-        },
-        'image_embedding': {
-            'is_sequence': True, 
-            'type': 'numerical', 
-            'shape': [512]
-        },
-        'text_embedding': {
-            'is_sequence': True, 
-            'type': 'numerical', 
-            'shape': [512]
-        },
-        'font_family': {
-            'is_sequence': True, 
-            'type': 'categorical', 
-            'input_dim': 35, 
-            'shape': [1]
-        },
-        'uuid': {
-            'is_sequence': True, 
-            'demo_only': True,
-            'type': 'categorical', 
-            'input_dim': 1215, 
-            'shape': [1]
-        },
+        'type': {'is_sequence': True, 'type': 'categorical', 'input_dim': 7, 'shape': [1]},
+        'left': {'is_sequence': True, 'type': 'categorical', 'input_dim': 64, 'shape': [1]},
+        'top': {'is_sequence': True, 'type': 'categorical', 'input_dim': 64, 'shape': [1]},
+        'width': {'is_sequence': True, 'type': 'categorical', 'input_dim': 64, 'shape': [1]},
+        'height': {'is_sequence': True, 'type': 'categorical', 'input_dim': 64, 'shape': [1]},
+        'image_embedding': {'is_sequence': True, 'type': 'numerical', 'shape': [512]},
     }
     
     model = MFP(input_columns, embed_dim=256, num_blocks=4)
@@ -437,16 +418,12 @@ if __name__ == "__main__":
     
     test_input = {
         'length': torch.tensor([[5], [7]], dtype=torch.long),
-        'type': torch.randint(0, 6, (batch_size, seq_len, 1)),
+        'type': torch.randint(0, 7, (batch_size, seq_len, 1)),
         'left': torch.randint(0, 64, (batch_size, seq_len, 1)),
         'top': torch.randint(0, 64, (batch_size, seq_len, 1)),
         'width': torch.randint(0, 64, (batch_size, seq_len, 1)),
         'height': torch.randint(0, 64, (batch_size, seq_len, 1)),
-        'opacity': torch.randint(0, 8, (batch_size, seq_len, 1)),
-        'color': torch.randint(0, 16, (batch_size, seq_len, 3)),
         'image_embedding': torch.randn(batch_size, seq_len, 512),
-        'text_embedding': torch.randn(batch_size, seq_len, 512),
-        'font_family': torch.randint(0, 35, (batch_size, seq_len, 1)),
     }
     
     print("测试前向传播...")
@@ -457,8 +434,3 @@ if __name__ == "__main__":
     print("\n输出形状:")
     for key, value in outputs.items():
         print(f"  {key:20s}: {list(value.shape)}")
-    
-    print("\n预期形状对比:")
-    print("  type:  [2, 10, 1, 6]")
-    print("  color: [2, 10, 3, 16]")
-    print("  opacity: [2, 10, 1, 8]")

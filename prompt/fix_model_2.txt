@@ -1,0 +1,346 @@
+merged_files.txt为原始项目现在我已经用pytorch重构（见demo.py,dataset.py）,原来的checkpoints我使用convert_tf_to_pytorch.py的方法做了转换
+原来的Decoder初始化打印形状为（Encoder以此类推）
+  type: Linear(256, 6) -> (1, 6)
+  left: Linear(256, 64) -> (1, 64)
+  top: Linear(256, 64) -> (1, 64)
+  width: Linear(256, 64) -> (1, 64)
+  height: Linear(256, 64) -> (1, 64)
+  opacity: Linear(256, 8) -> (1, 8)
+  color: Linear(256, 48) -> (3, 48)
+  image_embedding: Linear(256, 512) -> (512,)
+  text_embedding: Linear(256, 512) -> (512,)
+  font_family: Linear(256, 35) -> (1, 35)
+input_columns为：
+{
+  "id": {
+    "demo_only": true,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "length": {
+    "type": "categorical",
+    "input_dim": 50,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "group": {
+    "type": "categorical",
+    "input_dim": 7,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "format": {
+    "type": "categorical",
+    "input_dim": 68,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "canvas_width": {
+    "type": "categorical",
+    "input_dim": 41,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "canvas_height": {
+    "type": "categorical",
+    "input_dim": 46,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "category": {
+    "type": "categorical",
+    "input_dim": 24,
+    "shape": [
+      1
+    ],
+    "is_sequence": false,
+    "primary_label": null
+  },
+  "type": {
+    "type": "categorical",
+    "input_dim": 6,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": 0
+  },
+  "left": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "top": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "width": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "height": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "opacity": {
+    "type": "categorical",
+    "input_dim": 8,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "color": {
+    "type": "categorical",
+    "input_dim": 16,
+    "shape": [
+      3
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  },
+  "image_embedding": {
+    "type": "numerical",
+    "shape": [
+      512
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        true,
+        false,
+        true,
+        false,
+        true
+      ]
+    }
+  },
+  "text_embedding": {
+    "type": "numerical",
+    "shape": [
+      512
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+      ]
+    }
+  },
+  "font_family": {
+    "type": "categorical",
+    "input_dim": 35,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+      ]
+    }
+  }
+}
+
+重构后的代码运行打印结果：
+初始化Encoder:
+  color: Linear(3, 256)
+  font_family: Embedding(37, 256)
+  height: Embedding(66, 256)
+  image_embedding: Linear(512, 256)
+  left: Embedding(66, 256)
+  opacity: Embedding(66, 256)
+  text_embedding: Linear(512, 256)
+  top: Embedding(66, 256)
+  type: Embedding(8, 256)
+  uuid: Embedding(1217, 256)
+  width: Embedding(66, 256)
+总计: 11 个特征
+
+初始化Transformer:
+  blocks=4, embed_dim=256, num_heads=8
+
+初始化Decoder:
+  color: Linear(256, 3)
+  font_family: Linear(256, 35) -> (1, 35)
+  height: Linear(256, 64) -> (1, 64)
+  image_embedding: Linear(256, 512)
+  left: Linear(256, 64) -> (1, 64)
+  opacity: Linear(256, 64) -> (1, 64)
+  text_embedding: Linear(256, 512)
+  top: Linear(256, 64) -> (1, 64)
+  type: Linear(256, 6) -> (1, 6)
+  uuid: Linear(256, 1215) -> (1, 1215)
+  width: Linear(256, 64) -> (1, 64)
+
+input_columns为：
+{
+  "canvas_width": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "canvas_height": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "length": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "color": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      3
+    ]
+  },
+  "font_family": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 35,
+    "shape": [
+      1
+    ]
+  },
+  "height": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "image_embedding": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      512
+    ]
+  },
+  "left": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "opacity": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "text_embedding": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      512
+    ]
+  },
+  "top": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "type": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 6,
+    "shape": [
+      1
+    ]
+  },
+  "uuid": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 1215,
+    "shape": [
+      1
+    ]
+  },
+  "width": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  }
+}
+
+由于上述的不一致导致我现在不能输出正确的结果请给出修改后的完整代码

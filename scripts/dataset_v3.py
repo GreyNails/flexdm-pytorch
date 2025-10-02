@@ -246,7 +246,11 @@ class DesignLayoutDataset(Dataset):
         """
         生成input_columns配置 - 严格对齐TF格式
         
-        关键：input_dim不包含<MASK>和<NULL>，这些会在Encoder中+2
+        关键修复:
+        1. opacity的input_dim应该是8(离散化的bins数)
+        2. color的shape是[3]，input_dim是16
+        3. uuid标记为demo_only
+        4. 添加loss_condition字段
         """
         input_columns = {
             'id': {
@@ -257,118 +261,165 @@ class DesignLayoutDataset(Dataset):
             },
             'length': {
                 'type': 'categorical',
-                'input_dim': 50,
+                'input_dim': 50,  # 原始设置
                 'shape': [1],
                 'is_sequence': False,
                 'primary_label': None,
             },
             'canvas_width': {
                 'type': 'categorical',
-                'input_dim': len(self.width_to_idx) - 1 if self.width_to_idx else 40,
+                'input_dim': self.width_vocab_size - 1,  # 减去padding
                 'shape': [1],
                 'is_sequence': False,
                 'primary_label': None,
             },
             'canvas_height': {
                 'type': 'categorical',
-                'input_dim': len(self.height_to_idx) - 1 if self.height_to_idx else 45,
+                'input_dim': self.height_vocab_size - 1,
                 'shape': [1],
                 'is_sequence': False,
                 'primary_label': None,
             },
             'type': {
                 'type': 'categorical',
-                'input_dim': 6,  # 固定为6（与TF一致）
+                'input_dim': len(self.type_to_idx) - 2,  # 不包含<NULL>和<MASK>
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': 0,
             },
             'left': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'top': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'width': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'height': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
-            'opacity': {
+        }
+        
+        # Opacity - 固定为8个bins
+        if any('opacity' in item for item in self.data[:10]):
+            input_columns['opacity'] = {
                 'type': 'categorical',
-                'input_dim': 8,  # 固定为8（与TF一致）
-                'shape': [1],
-                'is_sequence': True,
-                'primary_label': None,
-            },
-            'color': {
-                'type': 'categorical',
-                'input_dim': 16,  # 固定为16（与TF一致）
-                'shape': [3],
-                'is_sequence': True,
-                'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, True, False]
-                }
-            },
-            'image_embedding': {
-                'type': 'numerical',
-                'shape': [512],
-                'is_sequence': True,
-                'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, True, False, True, False, True]
-                }
-            },
-            'text_embedding': {
-                'type': 'numerical',
-                'shape': [512],
-                'is_sequence': True,
-                'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, False, False]
-                }
-            },
-            'font_family': {
-                'type': 'categorical',
-                'input_dim': 35,  # 固定为35（与TF一致）
-                'shape': [1],
-                'is_sequence': True,
-                'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, False, False]
-                }
-            },
-            'uuid': {
-                'demo_only': True,
-                'type': 'categorical',
-                'input_dim': 1215,
+                'input_dim': 8,  # 固定为8（与TF版本一致）
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             }
-        }
+        
+        # Color - 关键修复：shape=[3], input_dim=16
+        if any('color' in item for item in self.data[:10]):
+            type_idx = list(self.type_to_idx.keys())
+            input_columns['color'] = {
+                'type': 'categorical',
+                'input_dim': 16,  # 固定为16
+                'shape': [3],  # RGB三通道
+                'is_sequence': True,
+                'primary_label': None,
+                'loss_condition': {
+                    'key': 'type',
+                    'mask': [
+                        False,  # NULL
+                        False,  # svgElement
+                        True,   # textElement
+                        False,  # imageElement
+                        True,   # coloredBackground
+                        False,  # maskElement
+                    ]
+                }
+            }
+        
+        # Image embedding
+        if any('image_embedding' in item for item in self.data[:10]):
+            input_columns['image_embedding'] = {
+                'type': 'numerical',
+                'shape': [512],
+                'is_sequence': True,
+                'primary_label': None,
+                'loss_condition': {
+                    'key': 'type',
+                    'mask': [
+                        False,  # NULL
+                        True,   # svgElement
+                        False,  # textElement
+                        True,   # imageElement
+                        False,  # coloredBackground
+                        True,   # maskElement
+                    ]
+                }
+            }
+        
+        # Text embedding
+        if any('text_embedding' in item for item in self.data[:10]):
+            input_columns['text_embedding'] = {
+                'type': 'numerical',
+                'shape': [512],
+                'is_sequence': True,
+                'primary_label': None,
+                'loss_condition': {
+                    'key': 'type',
+                    'mask': [
+                        False,  # NULL
+                        False,  # svgElement
+                        True,   # textElement
+                        False,  # imageElement
+                        False,  # coloredBackground
+                        False,  # maskElement
+                    ]
+                }
+            }
+        
+        # Font family
+        if self.font_to_idx:
+            input_columns['font_family'] = {
+                'type': 'categorical',
+                'input_dim': self.font_vocab_size - 2,  # 不包含<NULL>和<MASK>
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+                'loss_condition': {
+                    'key': 'type',
+                    'mask': [
+                        False,  # NULL
+                        False,  # svgElement
+                        True,   # textElement
+                        False,  # imageElement
+                        False,  # coloredBackground
+                        False,  # maskElement
+                    ]
+                }
+            }
+        
+        # UUID - demo only
+        if any('uuid' in item for item in self.data[:10]):
+            input_columns['uuid'] = {
+                'demo_only': True,
+                'type': 'categorical',
+                'input_dim': 10000,
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            }
         
         return input_columns
 

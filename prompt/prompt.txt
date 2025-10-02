@@ -1,0 +1,213 @@
+(base) hzj@29541d69cb02:/home/dell/Project-HCL/BaseLine/flexdm_pt/original/mfp$ tree
+.
+|-- __init__.py
+|-- __main__.py
+|-- __pycache__
+|   |-- __init__.cpython-37.pyc
+|   |-- __init__.cpython-39.pyc
+|   |-- __main__.cpython-37.pyc
+|   |-- args.cpython-37.pyc
+|   |-- args.cpython-39.pyc
+|   |-- main.cpython-37.pyc
+|   |-- train.cpython-37.pyc
+|   `-- train.cpython-39.pyc
+|-- args.py
+|-- data
+|   |-- __init__.py
+|   |-- __pycache__
+|   |   |-- __init__.cpython-37.pyc
+|   |   |-- __init__.cpython-39.pyc
+|   |   |-- discretizer.cpython-37.pyc
+|   |   |-- discretizer.cpython-39.pyc
+|   |   |-- spec.cpython-37.pyc
+|   |   `-- spec.cpython-39.pyc
+|   |-- component_legend.json
+|   |-- crello
+|   |   |-- __pycache__
+|   |   |   `-- schema.cpython-37.pyc
+|   |   |-- fonts.css
+|   |   `-- schema.py
+|   |-- crello-images-spec.yml
+|   |-- crello-spec.yml
+|   |-- crello-texts-spec.yml
+|   |-- dataforfd-spec.yml
+|   |-- datatest.py
+|   |-- discretizer.py
+|   |-- rico-spec.yml
+|   `-- spec.py
+|-- helpers
+|   |-- __init__.py
+|   |-- __pycache__
+|   |   |-- __init__.cpython-37.pyc
+|   |   |-- __init__.cpython-39.pyc
+|   |   |-- callbacks.cpython-37.pyc
+|   |   |-- callbacks.cpython-39.pyc
+|   |   |-- retrieve.cpython-37.pyc
+|   |   `-- svg_crello.cpython-37.pyc
+|   |-- callbacks.py
+|   |-- rasterizer.py
+|   |-- retrieve.py
+|   `-- svg_crello.py
+|-- main.py
+|-- models
+|   |-- __init__.py
+|   |-- __pycache__
+|   |   |-- __init__.cpython-37.pyc
+|   |   |-- __init__.cpython-39.pyc
+|   |   |-- canvasvae.cpython-37.pyc
+|   |   |-- layoutvae.cpython-37.pyc
+|   |   |-- masking.cpython-37.pyc
+|   |   |-- metrics.cpython-37.pyc
+|   |   |-- mfp.cpython-37.pyc
+|   |   |-- mfp.cpython-39.pyc
+|   |   |-- model.cpython-37.pyc
+|   |   `-- tensor_utils.cpython-37.pyc
+|   |-- architecture
+|   |   |-- __init__.py
+|   |   |-- __pycache__
+|   |   |   |-- __init__.cpython-37.pyc
+|   |   |   |-- cvae.cpython-37.pyc
+|   |   |   |-- decoder.cpython-37.pyc
+|   |   |   |-- encoder.cpython-37.pyc
+|   |   |   |-- mask.cpython-37.pyc
+|   |   |   |-- transformer.cpython-37.pyc
+|   |   |   `-- utils.cpython-37.pyc
+|   |   |-- cvae.py
+|   |   |-- decoder.py
+|   |   |-- encoder.py
+|   |   |-- mask.py
+|   |   |-- transformer.py
+|   |   `-- utils.py
+|   |-- canvasvae.py
+|   |-- layoutvae.py
+|   |-- masking.py
+|   |-- metrics.py
+|   |-- mfp.py
+|   |-- model.py
+|   `-- tensor_utils.py
+`-- train.py
+
+(base) hzj@29541d69cb02:/home/dell/Project-HCL/BaseLine/flex-dm/tmp/hc/checkpoints$ tree
+.
+|-- best.ckpt.data-00000-of-00001
+|-- best.ckpt.index
+|-- checkpoint
+|-- final.ckpt.data-00000-of-00001
+`-- final.ckpt.index
+
+(tkhmr_v1) hzj@29541d69cb02:/home/dell/Project-HCL/BaseLine/flex-dm/data/crello$ tree -L 1
+.
+|-- count.json
+|-- images
+|-- pkls
+|-- sample_2_complete.json
+|-- sample_complete_no_binary.json
+|-- sample_complete_with_binary.json
+|-- test-filtered.tfrecord
+|-- texts
+|-- train-00000-of-00008.tfrecord
+|-- train-00001-of-00008.tfrecord
+|-- train-00002-of-00008.tfrecord
+|-- train-00003-of-00008.tfrecord
+|-- train-00004-of-00008.tfrecord
+|-- train-00005-of-00008.tfrecord
+|-- train-00006-of-00008.tfrecord
+|-- train-00007-of-00008.tfrecord
+|-- v1test-00000-of-00001.tfrecord
+|-- v3test-filtered-no-human.tfrecord
+|-- val-00000-of-00001.tfrecord
+`-- vocabulary.json
+
+上述项目原来由tensorflow构建，我现在需要使用pytorch重构（torch 2.1.0+cu118），原来的checkpoints需要转化为ptrorch的存储方式，data 由原来的tfrecord要转化为json形式存储
+
+数据样例：
+{
+    # ===== 文档级别信息 =====
+    'id': b'5dbbfea2abc8ea6d1c14e913',      # 文档唯一ID
+    'format': b'Facebook cover',            # 设计格式类型
+    'group': b'HC',                         # 分组标识
+    'category': b'sportExtreme',            # 设计分类
+    'canvas_width': 851,                    # 画布宽度（像素）
+    'canvas_height': 315,                   # 画布高度（像素）
+    'length': 10,                           # 元素数量
+    
+    # ===== 元素级别信息（每个字段都是列表，长度=length） =====
+    
+    # --- 基础属性 ---
+    'uuid': [                               # 元素唯一标识符
+        b'4HtvT5BFxipgUnVJk7Aol73jdhtXID',
+        b'a3V6xAWKpZYBGJijK3WvSWjiHJhzaU',
+        # ... 共10个
+    ],
+    
+    'type': [                               # 元素类型
+        b'imageElement',     # 图像元素
+        b'svgElement',       # SVG矢量图
+        b'maskElement',      # 遮罩元素
+        b'textElement',      # 文本元素
+        # ... 共10个
+    ],
+    
+    # --- 位置和尺寸（归一化到0-1） ---
+    'left': [0.090, -0.041, 0.187, ...],    # 左边距（相对画布）
+    'top': [0.0, 0.307, 0.212, ...],        # 上边距（相对画布）
+    'width': [1.112, 0.272, 0.261, ...],    # 宽度（相对画布）
+    'height': [1.0, 0.384, 0.586, ...],     # 高度（相对画布）
+    
+    # --- 视觉属性 ---
+    'color': [                              # RGB颜色
+        [0, 0, 0],          # 黑色
+        [0, 0, 1],          # 蓝色
+        [231, 53, 60],      # 红色
+        [255, 255, 255],    # 白色
+        # ... 共10个
+    ],
+    
+    'opacity': [1.0, 1.0, 1.0, ...],        # 不透明度（0-1）
+    
+    'ratio_w_to_h': [                       # 宽高比
+        0.899, 1.409, 2.242, ...
+    ],
+    
+    # --- 文本相关属性 ---
+    'font_family': [                        # 字体
+        b'DummyFont',
+        b'Yanone Kaffeesatz',
+        # ... 共10个
+    ],
+    
+    'font_size': [                          # 字号（归一化）
+        0.0,              # 非文本元素为0
+        0.295,            # 文本元素
+        # ... 共10个
+    ],
+    
+    # --- 内容标识符（哈希值） ---
+    'image_hash': [                         # 图像内容哈希
+        b'4a23e121a59596b15c4dd3b36155d9',
+        b'2b0b6181e19747219306b35ec69321',
+        # ... 共10个（非图像元素也有占位哈希）
+    ],
+    
+    'text_hash': [                          # 文本内容哈希
+        b'bcf036b6f33e182d4705f5b1af13ac',  # 默认哈希（非文本）
+        b'f589eafcf087c11af27e5bafb047fa',  # 实际文本哈希
+        # ... 共10个
+    ],
+    
+    # --- 嵌入向量（用于检索和模型训练） ---
+    'image_embedding': [                    # 图像嵌入（512维）
+        [-0.158, 0.459, -0.583, ..., 0.123],  # 512个浮点数
+        [0.197, -0.190, -0.272, ..., 0.456],
+        # ... 共10个，每个512维
+    ],
+    
+    'text_embedding': [                     # 文本嵌入（512维）
+        [0.038, 0.089, -0.232, ..., 0.789],   # 512个浮点数
+        [0.350, 0.123, -0.456, ..., 0.234],
+        # ... 共10个，每个512维
+    ],
+}
+
+
+

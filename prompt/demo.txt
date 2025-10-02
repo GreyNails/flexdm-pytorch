@@ -1,0 +1,169 @@
+demo.py:
+ckpt_dir = "/home/dell/Project-HCL/BaseLine/flex-dm/results/crello/ours-exp-ft/checkpoints"
+dataset_name = "crello"
+db_root = "/home/dell/Project-HCL/BaseLine/flex-dm/data/crello"
+batch_size = 20
+import itertools
+import logging
+import sys
+from typing import Dict, List
+from pathlib import Path
+
+import tensorflow as tf
+from IPython.display import display, HTML
+%matplotlib inline
+import os
+# current_path = os.getcwd()
+# print("当前工作路径：", current_path)
+
+sys.path.append("../src/mfp")
+
+# current_path = os.getcwd()
+# print("当前工作路径：", current_path)
+# os.chdir("/storage/homes/hzj/hzj/Project-HCL/BaseLine/flex-dm/src/mfp")
+os.chdir("/home/dell/Project-HCL/BaseLine/flex-dm/src/mfp")
+
+
+# /home/dell/Project-HCL/BaseLine/flex-dm
+
+from mfp.data.spec import ATTRIBUTE_GROUPS, DataSpec, set_visual_default
+from mfp.helpers.retrieve import ImageRetriever, TextRetriever
+from mfp.helpers.svg_crello import SVGBuilder
+from mfp.models.mfp import MFP
+from mfp.models.architecture.mask import get_seq_mask
+from mfp.models.masking import get_initial_masks
+from util import grouper, load_model
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# fix seed for debug
+tf.random.set_seed(0)
+
+dataspec = DataSpec(dataset_name, db_root, batch_size)
+test_dataset = dataspec.make_dataset("test", shuffle=False)
+
+iterator = iter(test_dataset.take(1))
+example = next(iterator)
+input_columns = dataspec.make_input_columns()
+models = {"main": load_model(ckpt_dir, input_columns=input_columns)}
+
+# models = {"main": load_model(ckpt_dir, input_columns=input_columns, compile=False)}
+
+# Note: this part takes several minutes due to building search index
+db_root = Path(db_root)
+image_db = ImageRetriever(db_root, image_path=db_root / "images")
+image_db.build("test")
+text_db = TextRetriever(db_root, text_path=db_root / "texts")
+text_db.build("test")
+builders = {}
+builders["layout"] = SVGBuilder(
+    max_width=128,
+    max_height=192,
+    key="type",
+    preprocessor=dataspec.preprocessor,
+)
+patterns = (
+    ("visual", image_db, text_db),
+    ("visual_wo_text", image_db, None),
+    ("visual_wo_image", None, text_db),
+)
+
+for (name, idb, tdb) in patterns:
+    builders[name] = SVGBuilder(
+        max_width=128,
+        max_height=192,
+        key="color",
+        preprocessor=dataspec.preprocessor,
+        image_db=idb,
+        text_db=tdb,
+        render_text=True,
+    )
+
+target_task = "pos"  # choose from: elem, pos, attr, txt, img
+column_names = {
+    "txt": ["gt-layout", "gt-visual", "input", "pred"],
+    "img": ["gt-layout", "gt-visual", "input", "pred"],
+    "attr": ["gt-layout", "gt-visual", "input", "pred"],
+    "pos": ["gt-layout", "gt-visual", "pred-layout", "pred-visual"],
+    "elem": ["gt-layout", "gt-visual", "input-layout", "input-visual", "pred-layout", "pred-visual"],
+}
+
+def visualize_reconstruction(
+    models: List[tf.keras.Model],
+    example: Dict,
+    dataspec: DataSpec
+):
+    svgs = []
+    items = dataspec.unbatch(example)
+    svgs.append(list(map(builders["layout"], items)))
+    svgs.append(list(map(builders["visual"], items)))
+    if target_task == "txt":
+        svgs.append(list(map(builders["visual_wo_text"], items)))
+    elif target_task == "img":
+        svgs.append(list(map(builders["visual_wo_image"], items)))
+    elif target_task == "attr":
+        svgs.append(list(map(builders["visual"], [set_visual_default(x) for x in items])))
+
+    seq_mask = get_seq_mask(example["length"])
+    mfp_masks = get_initial_masks(input_columns, seq_mask)
+
+    for key in mfp_masks.keys():
+        if not input_columns[key]["is_sequence"]:
+            continue
+        mask = mfp_masks[key].numpy()
+
+        if target_task == "elem":
+            target_indices = [0]  # hide first
+            for i in range(len(target_indices)):
+                mask[i, target_indices[i]] = True
+        else:
+            if key == "type":
+                continue
+            attr_groups = ATTRIBUTE_GROUPS["crello"][target_task]
+            if key in attr_groups:
+                mask = seq_mask
+
+        mfp_masks[key] = tf.convert_to_tensor(mask)
+
+    if target_task == "elem":
+        example_copy = {}
+        for key in example.keys():
+            # note: assuming similar mask place in a batch
+            if example[key].shape[1] > 1:
+                B, S = example[key].shape[:2]
+                indices = tf.where(~mfp_masks[key][0, :])[:, 0]
+                example_copy[key] = tf.gather(
+                    example[key], indices, axis=1
+                )
+                # print(key, example_copy[key].shape)
+            else:
+                example_copy[key] = example[key]
+        example_copy["length"] -= 1
+        items = dataspec.unbatch(example_copy)
+        svgs.append(list(map(builders["layout"], items)))
+        svgs.append(list(map(builders["visual"], items)))
+
+    for model in models:
+        pred = model(example, training=False, demo_args={"masks": mfp_masks})
+        for key in example:
+            if key not in pred:
+                pred[key] = example[key]
+                print(example['id'])
+
+        if target_task in ["pos", "elem"]:
+            svgs.append(list(map(builders["layout"], dataspec.unbatch(pred))))
+        svgs.append(list(map(builders["visual"], dataspec.unbatch(pred))))
+
+    return [list(grouper(row, len(column_names[target_task]))) for row in zip(*svgs)]
+
+iterator = iter(test_dataset.take(1))
+example = next(iterator)
+
+print(f"From left to right: {','.join(column_names[target_task])}")
+svgs = visualize_reconstruction(models.values(), example, dataspec)
+for i, row in enumerate(svgs):
+    print(i)
+    display(HTML("<div>%s</div>" % " ".join(itertools.chain.from_iterable(row))))
+
+上述是一个原来在tensorflow框架下测试使用代码（其他相关代码前面已经提供），现在给出在pytorch框架下的测试使用代码（其他相关代码也要修改）

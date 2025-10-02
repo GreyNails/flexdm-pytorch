@@ -1,0 +1,9 @@
+# ==================== 核心框架 ====================
+# PyTorch (根据CUDA版本选择)
+#torch==2.1.0+cu118
+#torchvision==0.16.0+cu118
+#torchaudio==2.1.0+cu118
+
+# TensorFlow (仅用于数据转换，转换完成后可卸载)
+tensorflow==2.13.0
+tensorflow-probability==0.21.0

@@ -1,0 +1,102 @@
+{
+  "canvas_width": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "canvas_height": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "length": {
+    "is_sequence": false,
+    "type": "categorical",
+    "input_dim": 2000
+  },
+  "color": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      3
+    ]
+  },
+  "font_family": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 81,
+    "shape": [
+      1
+    ]
+  },
+  "height": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "image_embedding": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      512
+    ]
+  },
+  "left": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "opacity": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "text_embedding": {
+    "is_sequence": true,
+    "type": "numerical",
+    "shape": [
+      512
+    ]
+  },
+  "top": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  },
+  "type": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 15,
+    "shape": [
+      1
+    ]
+  },
+  "uuid": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 1215,
+    "shape": [
+      1
+    ]
+  },
+  "width": {
+    "is_sequence": true,
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ]
+  }
+}

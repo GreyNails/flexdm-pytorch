@@ -1,0 +1,1675 @@
+original:
+svg_crello.py
+"""
+Original implementation directly parsing crawled data.
+"""
+
+import logging
+import math
+import os
+import pickle
+import xml.etree.ElementTree as ET
+from itertools import chain, groupby, repeat
+
+from mfp.data.crello import schema
+
+NS = {
+    "svg": "http://www.w3.org/2000/svg",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "xhtml": "http://www.w3.org/1999/xhtml",
+}
+ET.register_namespace("", NS["svg"])
+ET.register_namespace("xlink", NS["xlink"])
+ET.register_namespace("html", NS["xhtml"])
+
+logger = logging.getLogger(__name__)
+
+# DUMMY_TEXT = '''
+# Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
+# incididunt ut labore et dolore magna aliqua.
+# '''
+DUMMY_TEXT = """
+TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT
+"""
+
+PKL_DIR = f"{os.path.dirname(__file__)}/../../../../data/crello/pkls"
+
+
+def load_fonts_css(path: str):
+    """
+    Load font-family to stylesheet rules mapping.
+    Get css from
+    """
+    import tinycss
+
+    parser = tinycss.make_parser("fonts3")
+    stylesheet = parser.parse_stylesheet_file(path)
+    faces = [
+        {
+            decl.name: decl.value.as_css().replace("_old", "")
+            for decl in rule.declarations
+        }
+        for rule in stylesheet.rules
+    ]
+    return {
+        face: list(it) for face, it in groupby(faces, lambda x: x.get("font-family"))
+    }
+
+
+class SVGBuilder(object):
+    """
+    Utility to generate SVG for visualization.
+
+    Usage::
+
+        dataspec = DataSpec(...)
+        dataset = dataspec.make_dataset('val')
+        example = next(iter(dataset))
+
+        # Manual colormap.
+        builder = SVGBuilder(
+            'type',
+            colormap={
+                '': 'none',
+                'svgElement': 'blue',
+                'textElement': 'red',
+                'imageElement': 'green',
+                'maskElement': 'cyan',
+                'coloredBackground': 'magenta',
+                'videoElement': 'yellow',
+            },
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+        # Auto colormap by preprocessor.
+        builder = SVGBuilder(
+            'component',
+            preprocessor=dataspec.preprocessor,
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+    """
+
+    def __init__(
+        self,
+        key=None,
+        preprocessor=None,
+        colormap=None,
+        canvas_width=None,
+        canvas_height=None,
+        max_width=None,
+        max_height=None,
+        opacity=0.5,
+        image_db=None,
+        text_db=None,
+        render_text=False,
+        **kwargs,
+    ):
+        assert key
+        self._key = key
+        self._canvas_width = canvas_width or 256
+        self._canvas_height = canvas_height or 256
+        self._max_width = max_width
+        self._max_height = max_height
+        self._opacity = opacity
+        self._render_text = render_text
+        assert preprocessor or colormap
+        if preprocessor is None or key == "color":
+            self._colormap = colormap
+        else:
+            vocabulary = preprocessor[key].get_vocabulary()
+            self._colormap = self._make_colormap(vocabulary, colormap)
+        self._image_db = image_db
+        self._text_db = text_db
+        self.fonts = load_fonts_css(
+            os.path.dirname(__file__) + "/../data/crello/fonts.css"
+        )
+
+    def __call__(self, document):
+        canvas_width, canvas_height = self.compute_canvas_size(document)
+        root = ET.Element(
+            ET.QName(NS["svg"], "svg"),
+            {
+                "width": str(canvas_width),
+                "height": str(canvas_height),
+                "viewBox": "0 0 1 1",
+                # 'style': 'background-color: #EEE',
+                "style": "background-color: #FFF",
+                "preserveAspectRatio": "none",
+            },
+        )
+
+        doc_size = {
+            "width": document["canvas_width"],
+            "height": document["canvas_height"],
+        }
+
+        # # load pickled data
+        id_ = document["id"].decode()
+        pkl_file = f"{PKL_DIR}/{id_[:3]}/{id_}.pkl"
+        with open(pkl_file, "rb") as f:
+            pkl_data = pickle.load(f)
+        pkl_elements = pkl_data.template[0].elements
+        pkl_uuids = [e.uuid for e in pkl_elements]
+
+        if len(pkl_elements) != len(document["elements"]):
+            plen = len(pkl_elements)
+            elen = len(document["elements"])
+            logger.warning(f"#elements mismatch {plen},{elen} for pkl, tfr")
+
+        # find one-to-one correspondense
+        doc2pkl = {}
+        for i, element in enumerate(document["elements"]):
+            uuid_ = element["uuid"].decode()
+            try:
+                doc2pkl[i] = pkl_uuids.index(uuid_)
+            except ValueError:
+                logger.warning(f"Not found: {uuid_}")
+
+        for i, element in enumerate(document["elements"]):
+            if i not in doc2pkl:  # with very low prob. it cannot be found
+                continue
+            if self._key == "color":
+                fill = "rgb(%g,%g,%g)" % tuple(map(int, element["color"]))
+            else:
+                fill = self._colormap.get(element[self._key], "none")
+
+            image_url = ""
+            if self._image_db:
+                if (
+                    element.get(self._image_db.condition["key"])
+                    in self._image_db.condition["values"]
+                ):
+                    image_url = self._image_db.search(element[self._image_db.value])
+
+            if self._text_db:
+                if (
+                    element.get(self._text_db.condition["key"])
+                    in self._text_db.condition["values"]
+                ):
+                    text = self._text_db.search(element[self._text_db.value])
+                else:
+                    text = DUMMY_TEXT
+            else:
+                text = DUMMY_TEXT
+
+            if image_url:
+                node = self._make_image(root, element, image_url)
+            elif self._render_text and element.get("type") == "textElement":
+                node = self._make_text_element(
+                    root,
+                    element,
+                    fill,
+                    doc_size,
+                    text,
+                    pkl_elements[doc2pkl[i]],
+                )
+            else:
+                node = self._make_rect(root, element, fill)
+
+            title = ET.SubElement(node, ET.QName(NS["svg"], "title"))
+            title.text = str(
+                {
+                    k: v
+                    for k, v in element.items()
+                    # if not (self._image_db and k == self._image_db.value)
+                    # to filter out large array like image/text_embedding
+                    if not isinstance(v, list)
+                }
+            )
+
+        # get links for fonts
+        style = ET.SubElement(root, "{%s}style" % NS["svg"])
+        self._fill_stylesheet(root, style)
+
+        return ET.tostring(root).decode("utf-8")
+
+    def _fill_stylesheet(self, root, style):
+        font_families = {
+            text.get("font-family")
+            for text in root.iter("{%s}text" % NS["svg"])
+            if text.get("font-family") is not None
+        }
+        style.text = "\n".join(
+            "@font-face { %s }" % " ".join("%s: %s;" % (key, item[key]) for key in item)
+            for item in chain.from_iterable(
+                self.fonts.get(family, []) for family in font_families
+            )
+        )
+
+    def compute_canvas_size(self, document):
+        canvas_width = document.get("canvas_width", self._canvas_width)
+        canvas_height = document.get("canvas_height", self._canvas_height)
+        scale = 1.0
+        if self._max_width is not None:
+            scale = min(self._max_width / canvas_width, scale)
+        if self._max_height is not None:
+            scale = min(self._max_height / canvas_height, scale)
+        return canvas_width * scale, canvas_height * scale
+
+    def _make_colormap(self, vocabulary, colormap=None):
+        """
+        Generate a colormap for the specified vocabulary list.
+        """
+        from matplotlib import cm
+
+        vocab_size = len(vocabulary)
+        cmap = cm.get_cmap(colormap or "tab20", vocab_size)
+        return {
+            label: "rgb(%g,%g,%g)" % tuple(int(x * 255) for x in c[:3])
+            for label, c in zip(vocabulary, cmap(range(vocab_size)))
+        }
+
+    def _make_text_element(
+        self, parent, element, fill, doc_size, text_str, pkl_element
+    ):
+        def _make_map(m, default_key=None):
+            return chain.from_iterable(
+                repeat(
+                    (x.get("type", default_key), x["value"]),
+                    x["endIndex"] - x["startIndex"],
+                )
+                for x in m
+            )
+
+        def _generate_spans(text, style_map):
+            offset = 0
+            for style, it in groupby(style_map):
+                length = len(list(it)) + 1
+                item = dict(style)
+                item["text"] = text[offset : offset + length]
+                yield item
+                offset += length
+
+        def _make_linespans(text, pkl_element):
+            style_map = list(
+                zip(
+                    _make_map(pkl_element.colorMap, default_key="color"),
+                    _make_map(pkl_element.boldMap, default_key="bold"),
+                    _make_map(pkl_element.italicMap, default_key="italic"),
+                )
+            )
+            br_inds = [i for (i, t) in enumerate(text) if t == "\n"]
+
+            if pkl_element.lineMap is not None:
+                default_line_map = []
+            elif len(br_inds) == 0:
+                default_line_map = [
+                    {"startIndex": 0, "endIndex": len(pkl_element.text)}
+                ]
+            else:
+                default_line_map = []
+                start = 0
+                for ind in br_inds:
+                    default_line_map.append({"startIndex": start, "endIndex": ind - 1})
+                    start = ind + 1
+                default_line_map.append(
+                    {"startIndex": start, "endIndex": len(text) - 1}
+                )
+
+            for line in pkl_element.lineMap or default_line_map:
+                start = line["startIndex"]
+                end = line["endIndex"] + 1
+
+                line_text = text[start:end]
+                line_style_map = style_map[start:end]
+                yield _generate_spans(line_text, line_style_map)
+
+        margin = element["height"] * 0.1  # To avoid unexpected clipping.
+        container = ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "svg"),
+            {
+                "id": element["uuid"].decode(),
+                "class": element["type"],
+                "x": "%g" % (element["left"] or 0),
+                "y": "%g" % ((element["top"] or 0) - margin),
+                "width": "%g" % (element["width"]),
+                "overflow": "visible",
+            },
+        )
+        opacity = element.get("opacity", 1.0)
+        if opacity < 1:
+            container.set("opacity", "%g" % opacity)
+
+        # in element filling, different type might be used
+        # in that case, we should somehow feed default values
+        font_size = (
+            getattr(pkl_element, "fontSize", doc_size["height"]) / doc_size["height"]
+        )
+        text_align = getattr(pkl_element, "textAlign", "center")
+        line_height = getattr(pkl_element, "lineHeight", 1.0)
+        capitalize = getattr(pkl_element, "capitalize", False)
+        underline = getattr(pkl_element, "underline", False)
+        letter_spacing = getattr(pkl_element, "letterSpacing", doc_size["width"])
+        if letter_spacing is None:
+            letter_spacing = 0.0
+        else:
+            letter_spacing /= doc_size["width"]
+
+        if not getattr(pkl_element, "lineMap", False):
+            setattr(pkl_element, "lineMap", None)
+        if not getattr(pkl_element, "colorMap", False):
+            setattr(pkl_element, "colorMap", [])
+        if not getattr(pkl_element, "boldMap", False):
+            setattr(pkl_element, "boldMap", [])
+        if not getattr(pkl_element, "italicMap", False):
+            setattr(pkl_element, "italicMap", [])
+        if not getattr(pkl_element, "text", False):
+            setattr(pkl_element, "text", "a" * 1000)
+
+        text = ET.SubElement(
+            container,
+            "{%s}text" % NS["svg"],
+            {
+                "font-size": "%g" % font_size,
+                "font-family": element["font_family"],
+                "letter-spacing": "%g" % letter_spacing,
+            },
+        )
+
+        if underline:
+            text.set("text-decoration", "underline")
+        if pkl_element.angle is not None and pkl_element.angle != 0:
+            # Note: Chromium clips the svg region.
+            angle = 180 * (pkl_element.angle / math.pi)
+            text.set(
+                "transform",
+                "rotate(%g, %g, %g)"
+                % (angle, element["width"] / 2, element["height"] / 2),
+            )
+        x = {"left": "0", "center": "50%", "right": "100%"}[text_align]
+        anchor = {"left": "start", "center": "middle", "right": "end"}[text_align]
+
+        line_height = line_height * font_size
+
+        # print('L343', fill)
+        for index, line in enumerate(_make_linespans(text_str, pkl_element)):
+            line_tspan = ET.SubElement(
+                text,
+                "{%s}tspan" % NS["svg"],
+                {
+                    "dy": "%g" % line_height,
+                    "x": x,
+                    "text-anchor": anchor,
+                    "dominant-baseline": "central",
+                },
+            )
+            if index == 0:
+                text.set("y", "%g" % (margin))
+                line_tspan.set("dy", "%g" % (line_height / 2))
+            for span in line:
+
+                def f(x):
+                    # convert 'rgb(255,255,255)' to 'FFFFFF'
+                    values = [
+                        "{:02x}".format(int(s)).upper() for s in x[4:-1].split(",")
+                    ]
+                    return "".join(values)
+
+                color = f(fill)
+
+                # print('L359', span['color'])
+                tspan = ET.SubElement(
+                    line_tspan,
+                    "{%s}tspan" % NS["svg"],
+                    {
+                        # 'fill': '#%s' % span['color'],
+                        "fill": "#%s" % color,
+                        "dominant-baseline": "central",
+                    },
+                )
+                tspan.text = span["text"].strip()
+                if span["bold"]:
+                    tspan.set("font-weight", "bold")
+                if span["italic"]:
+                    tspan.set("font-style", "italic")
+                if capitalize:
+                    # Capitalize at the leaf span for Safari compatibility.
+                    tspan.set("style", "text-transform: uppercase;")
+
+        return container
+
+    def _make_image(self, parent, element, image_url):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "image"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                ET.QName(NS["xlink"], "href"): image_url,
+                "opacity": str(element.get("opacity", 1.0)),
+                "preserveAspectRatio": "none",
+            },
+        )
+
+    def _make_rect(self, parent, element, fill):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "rect"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                "fill": str(fill),
+                "opacity": str(element.get("opacity", 1.0) * self._opacity),
+            },
+        )
+
+
+demo.py:
+ckpt_dir = "/home/dell/Project-HCL/BaseLine/flex-dm/results/crello/ours-exp-ft/checkpoints"
+dataset_name = "crello"
+db_root = "/home/dell/Project-HCL/BaseLine/flex-dm/data/crello"
+batch_size = 20
+import itertools
+import logging
+import sys
+from typing import Dict, List
+from pathlib import Path
+
+import tensorflow as tf
+from IPython.display import display, HTML
+%matplotlib inline
+import os
+# current_path = os.getcwd()
+# print("当前工作路径：", current_path)
+
+sys.path.append("../src/mfp")
+
+# current_path = os.getcwd()
+# print("当前工作路径：", current_path)
+# os.chdir("/storage/homes/hzj/hzj/Project-HCL/BaseLine/flex-dm/src/mfp")
+os.chdir("/home/dell/Project-HCL/BaseLine/flex-dm/src/mfp")
+
+
+# /home/dell/Project-HCL/BaseLine/flex-dm
+
+from mfp.data.spec import ATTRIBUTE_GROUPS, DataSpec, set_visual_default
+from mfp.helpers.retrieve import ImageRetriever, TextRetriever
+from mfp.helpers.svg_crello import SVGBuilder
+from mfp.models.mfp import MFP
+from mfp.models.architecture.mask import get_seq_mask
+from mfp.models.masking import get_initial_masks
+from util import grouper, load_model
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# fix seed for debug
+tf.random.set_seed(0)
+
+dataspec = DataSpec(dataset_name, db_root, batch_size)
+test_dataset = dataspec.make_dataset("test", shuffle=False)
+
+iterator = iter(test_dataset.take(1))
+example = next(iterator)
+input_columns = dataspec.make_input_columns()
+models = {"main": load_model(ckpt_dir, input_columns=input_columns)}
+
+# models = {"main": load_model(ckpt_dir, input_columns=input_columns, compile=False)}
+
+# Note: this part takes several minutes due to building search index
+db_root = Path(db_root)
+image_db = ImageRetriever(db_root, image_path=db_root / "images")
+image_db.build("test")
+text_db = TextRetriever(db_root, text_path=db_root / "texts")
+text_db.build("test")
+builders = {}
+builders["layout"] = SVGBuilder(
+    max_width=128,
+    max_height=192,
+    key="type",
+    preprocessor=dataspec.preprocessor,
+)
+patterns = (
+    ("visual", image_db, text_db),
+    ("visual_wo_text", image_db, None),
+    ("visual_wo_image", None, text_db),
+)
+
+for (name, idb, tdb) in patterns:
+    builders[name] = SVGBuilder(
+        max_width=128,
+        max_height=192,
+        key="color",
+        preprocessor=dataspec.preprocessor,
+        image_db=idb,
+        text_db=tdb,
+        render_text=True,
+    )
+
+target_task = "pos"  # choose from: elem, pos, attr, txt, img
+column_names = {
+    "txt": ["gt-layout", "gt-visual", "input", "pred"],
+    "img": ["gt-layout", "gt-visual", "input", "pred"],
+    "attr": ["gt-layout", "gt-visual", "input", "pred"],
+    "pos": ["gt-layout", "gt-visual", "pred-layout", "pred-visual"],
+    "elem": ["gt-layout", "gt-visual", "input-layout", "input-visual", "pred-layout", "pred-visual"],
+}
+
+def visualize_reconstruction(
+    models: List[tf.keras.Model],
+    example: Dict,
+    dataspec: DataSpec
+):
+    svgs = []
+    items = dataspec.unbatch(example)
+    svgs.append(list(map(builders["layout"], items)))
+    svgs.append(list(map(builders["visual"], items)))
+    if target_task == "txt":
+        svgs.append(list(map(builders["visual_wo_text"], items)))
+    elif target_task == "img":
+        svgs.append(list(map(builders["visual_wo_image"], items)))
+    elif target_task == "attr":
+        svgs.append(list(map(builders["visual"], [set_visual_default(x) for x in items])))
+
+    seq_mask = get_seq_mask(example["length"])
+    mfp_masks = get_initial_masks(input_columns, seq_mask)
+
+    for key in mfp_masks.keys():
+        if not input_columns[key]["is_sequence"]:
+            continue
+        mask = mfp_masks[key].numpy()
+
+        if target_task == "elem":
+            target_indices = [0]  # hide first
+            for i in range(len(target_indices)):
+                mask[i, target_indices[i]] = True
+        else:
+            if key == "type":
+                continue
+            attr_groups = ATTRIBUTE_GROUPS["crello"][target_task]
+            if key in attr_groups:
+                mask = seq_mask
+
+        mfp_masks[key] = tf.convert_to_tensor(mask)
+
+    if target_task == "elem":
+        example_copy = {}
+        for key in example.keys():
+            # note: assuming similar mask place in a batch
+            if example[key].shape[1] > 1:
+                B, S = example[key].shape[:2]
+                indices = tf.where(~mfp_masks[key][0, :])[:, 0]
+                example_copy[key] = tf.gather(
+                    example[key], indices, axis=1
+                )
+                # print(key, example_copy[key].shape)
+            else:
+                example_copy[key] = example[key]
+        example_copy["length"] -= 1
+        items = dataspec.unbatch(example_copy)
+        svgs.append(list(map(builders["layout"], items)))
+        svgs.append(list(map(builders["visual"], items)))
+
+    for model in models:
+        pred = model(example, training=False, demo_args={"masks": mfp_masks})
+        for key in example:
+            if key not in pred:
+                pred[key] = example[key]
+                print(example['id'])
+
+        if target_task in ["pos", "elem"]:
+            svgs.append(list(map(builders["layout"], dataspec.unbatch(pred))))
+        svgs.append(list(map(builders["visual"], dataspec.unbatch(pred))))
+
+    return [list(grouper(row, len(column_names[target_task]))) for row in zip(*svgs)]
+
+iterator = iter(test_dataset.take(1))
+example = next(iterator)
+
+print(f"From left to right: {','.join(column_names[target_task])}")
+svgs = visualize_reconstruction(models.values(), example, dataspec)
+for i, row in enumerate(svgs):
+    print(i)
+    display(HTML("<div>%s</div>" % " ".join(itertools.chain.from_iterable(row))))
+
+参考demo.py和svg_crello.py里面的渲染方法将下面代码中的渲染进行修正（下面的代码渲染出来layout和visua都只有一张纯色图）：
+demo_pytorch.py
+"""
+PyTorch版本的MFP模型演示和可视化
+支持SVG转PNG并正确处理类型映射
+"""
+import json
+import itertools
+import logging
+import io
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import torch
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+# SVG转PNG依赖
+try:
+    import cairosvg
+    HAS_CAIROSVG = True
+except ImportError:
+    HAS_CAIROSVG = False
+    print("警告: 未安装cairosvg，将使用备用方案")
+    print("安装: pip install cairosvg")
+
+try:
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPM
+    HAS_SVGLIB = True
+except ImportError:
+    HAS_SVGLIB = False
+
+# 导入PyTorch模型和工具
+from models_pytorch import MFP
+from dataset import DesignLayoutDataset
+from svg_builder_pytorch import SVGBuilder
+from retriever_pytorch import ImageRetriever, TextRetriever
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# 设置随机种子
+torch.manual_seed(0)
+np.random.seed(0)
+
+
+# ==================== 配置类 ====================
+
+class DemoConfig:
+    """演示配置"""
+    def __init__(self):
+        self.ckpt_dir = "/home/dell/Project-HCL/BaseLine/flexdm_pt/chechpoints"
+        self.dataset_name = "crello_json"
+        self.db_root = "/home/dell/Project-HCL/BaseLine/flexdm_pt/data/crello_json"
+        self.batch_size = 20
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        # 任务类型: elem, pos, attr, txt, img
+        self.target_task = "pos"
+        
+        # 输出目录
+        self.output_dir = "./outputs"
+        
+        # 列名配置
+        self.column_names = {
+            "txt": ["gt-layout", "gt-visual", "input", "pred"],
+            "img": ["gt-layout", "gt-visual", "input", "pred"],
+            "attr": ["gt-layout", "gt-visual", "input", "pred"],
+            "pos": ["gt-layout", "gt-visual", "pred-layout", "pred-visual"],
+            "elem": ["gt-layout", "gt-visual", "input-layout", "input-visual", "pred-layout", "pred-visual"],
+        }
+        
+        # 属性分组
+        self.attribute_groups = {
+            "type": ["type"],
+            "pos": ["left", "top", "width", "height"],
+            "attr": ["opacity", "color", "font_family"],
+            "img": ["image_embedding"],
+            "txt": ["text_embedding"],
+        }
+
+
+# ==================== 类型映射 ====================
+
+# 默认类型映射（如果无法从vocabulary加载）
+DEFAULT_TYPE_MAPPING = {
+    0: '',  # padding
+    1: 'svgElement',
+    2: 'textElement',
+    3: 'imageElement',
+    4: 'coloredBackground',
+    5: 'maskElement',
+    6: 'humanElement',
+}
+
+
+def load_type_mapping_from_vocab(vocab_file: str) -> Dict[int, str]:
+    """
+    从vocabulary.json加载类型映射
+    
+    Args:
+        vocab_file: vocabulary.json路径
+    
+    Returns:
+        类型ID到名称的映射字典
+    """
+    return DEFAULT_TYPE_MAPPING
+    try:
+        with open(vocab_file, 'r') as f:
+            vocab = json.load(f)
+        
+        type_vocab = vocab.get('type', {})
+        
+        if isinstance(type_vocab, dict):
+            # 字典格式：{"type_name": count}
+            # 按字母顺序排序以保证一致性
+            type_list = sorted(type_vocab.keys())
+        elif isinstance(type_vocab, list):
+            # 列表格式
+            type_list = type_vocab
+        else:
+            logger.warning(f"未知的vocabulary格式，使用默认映射")
+            return DEFAULT_TYPE_MAPPING
+        
+        # 创建映射（从1开始，0是padding）
+        id_to_name = {0: ''}  # padding
+        for i, name in enumerate(type_list):
+            id_to_name[i + 1] = name
+        
+        logger.info("✓ 类型映射加载成功:")
+        for idx, name in sorted(id_to_name.items()):
+            if name:  # 不显示空字符串
+                logger.info(f"    {idx}: {name}")
+        
+        return id_to_name
+        
+    except Exception as e:
+        logger.warning(f"加载类型映射失败: {e}，使用默认映射")
+        return DEFAULT_TYPE_MAPPING
+
+
+def load_font_mapping_from_dataset(dataset) -> Dict[int, str]:
+    """
+    从数据集加载字体映射
+    
+    Args:
+        dataset: DesignLayoutDataset实例
+    
+    Returns:
+        字体ID到名称的映射字典
+    """
+    if hasattr(dataset, 'idx_to_font'):
+        return dataset.idx_to_font
+    return {}
+
+
+# ==================== SVG保存功能 ====================
+
+def save_svg_as_image(
+    svg_string: str,
+    output_path: str,
+    width: int = 800,
+    height: int = 600
+):
+    """将SVG字符串保存为PNG图片"""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if HAS_CAIROSVG:
+        try:
+            cairosvg.svg2png(
+                bytestring=svg_string.encode('utf-8'),
+                write_to=str(output_path),
+                output_width=width,
+                output_height=height,
+            )
+        except Exception as e:
+            logger.error(f"cairosvg转换失败: {e}")
+            # 降级保存为SVG
+            svg_path = output_path.with_suffix('.svg')
+            with open(svg_path, 'w', encoding='utf-8') as f:
+                f.write(svg_string)
+    elif HAS_SVGLIB:
+        try:
+            drawing = svg2rlg(io.BytesIO(svg_string.encode('utf-8')))
+            renderPM.drawToFile(drawing, str(output_path), fmt='PNG')
+        except Exception as e:
+            logger.error(f"svglib转换失败: {e}")
+            svg_path = output_path.with_suffix('.svg')
+            with open(svg_path, 'w', encoding='utf-8') as f:
+                f.write(svg_string)
+    else:
+        # 直接保存SVG
+        svg_path = output_path.with_suffix('.svg')
+        with open(svg_path, 'w', encoding='utf-8') as f:
+            f.write(svg_string)
+        logger.warning(f"保存为SVG格式: {svg_path}")
+
+
+def save_visualization_grid(
+    svgs: list,
+    output_dir: str,
+    column_names: list,
+    prefix: str = "sample"
+):
+    """保存可视化结果为网格图片"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"\n保存可视化结果到: {output_dir}")
+    
+    for sample_idx, row in enumerate(svgs):
+        sample_dir = output_dir / f"{prefix}_{sample_idx:03d}"
+        sample_dir.mkdir(exist_ok=True)
+        
+        # 展平嵌套列表
+        flat_row = []
+        for item in row:
+            if isinstance(item, (list, tuple)):
+                flat_row.extend(item)
+            else:
+                flat_row.append(item)
+        
+        # 保存每一列
+        saved_count = 0
+        for col_idx, col_name in enumerate(column_names):
+            if col_idx >= len(flat_row):
+                break
+            
+            svg_content = flat_row[col_idx]
+            if svg_content is None:
+                continue
+            
+            output_path = sample_dir / f"{col_idx:02d}_{col_name}.png"
+            try:
+                save_svg_as_image(svg_content, str(output_path), width=400, height=600)
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"保存失败 {col_name}: {e}")
+        
+        if sample_idx < 3 or sample_idx == len(svgs) - 1:
+            logger.info(f"  样本 {sample_idx}: 保存 {saved_count}/{len(column_names)} 张图片")
+    
+    logger.info(f"✓ 所有结果已保存")
+
+
+def create_comparison_image(
+    svgs: list,
+    output_path: str,
+    column_names: list,
+    samples_per_row: int = 2,
+    svg_width: int = 200,
+    svg_height: int = 300,
+):
+    """创建对比图（多个样本并排）"""
+    if not HAS_CAIROSVG:
+        logger.warning("需要cairosvg创建对比图: pip install cairosvg")
+        return
+    
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    padding = 10
+    header_height = 30
+    label_height = 20
+    
+    num_samples = len(svgs)
+    num_cols = len(column_names)
+    num_rows = (num_samples + samples_per_row - 1) // samples_per_row
+    
+    cell_width = svg_width + padding * 2
+    cell_height = svg_height + header_height + label_height + padding * 2
+    canvas_width = samples_per_row * num_cols * cell_width
+    canvas_height = num_rows * cell_height
+    
+    canvas = Image.new('RGB', (canvas_width, canvas_height), 'white')
+    draw = ImageDraw.Draw(canvas)
+    
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+        label_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+    except:
+        title_font = ImageFont.load_default()
+        label_font = ImageFont.load_default()
+    
+    for sample_idx, row in enumerate(svgs):
+        row_idx = sample_idx // samples_per_row
+        col_idx = sample_idx % samples_per_row
+        
+        base_x = col_idx * num_cols * cell_width
+        base_y = row_idx * cell_height
+        
+        flat_row = []
+        for item in row:
+            if isinstance(item, (list, tuple)):
+                flat_row.extend(item)
+            else:
+                flat_row.append(item)
+        
+        for c_idx, col_name in enumerate(column_names):
+            if c_idx >= len(flat_row):
+                break
+            
+            svg_content = flat_row[c_idx]
+            if svg_content is None:
+                continue
+            
+            x = base_x + c_idx * cell_width + padding
+            y = base_y + header_height + padding
+            
+            try:
+                if row_idx == 0:
+                    draw.text(
+                        (x + svg_width // 2, base_y + 5),
+                        col_name,
+                        fill='black',
+                        font=title_font,
+                        anchor="mt"
+                    )
+                
+                png_data = cairosvg.svg2png(
+                    bytestring=svg_content.encode('utf-8'),
+                    output_width=svg_width,
+                    output_height=svg_height,
+                )
+                img = Image.open(io.BytesIO(png_data))
+                canvas.paste(img, (x, y))
+                
+                if c_idx == 0:
+                    draw.text(
+                        (x - 5, y + svg_height // 2),
+                        f"#{sample_idx}",
+                        fill='black',
+                        font=label_font,
+                        anchor="rm"
+                    )
+                
+            except Exception as e:
+                logger.error(f"渲染失败: 样本{sample_idx}, {col_name}: {e}")
+                draw.rectangle([x, y, x + svg_width, y + svg_height], outline='red', width=2)
+                draw.text((x + svg_width // 2, y + svg_height // 2), "Error", fill='red', font=label_font, anchor="mm")
+    
+    canvas.save(output_path)
+    logger.info(f"✓ 对比图已保存: {output_path}")
+
+
+# ==================== 模型和数据处理 ====================
+
+def load_model(checkpoint_path: str, input_columns: Dict, device: str = 'cuda'):
+    """加载PyTorch模型"""
+    model = MFP(
+        input_columns=input_columns,
+        embed_dim=256,
+        num_blocks=4,
+        num_heads=8,
+        dropout=0.1,
+    )
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        logger.warning(f"缺失 {len(missing)} 个键")
+    if unexpected:
+        logger.warning(f"多余 {len(unexpected)} 个键")
+    
+    model.to(device)
+    model.eval()
+    
+    logger.info(f"✓ 模型加载成功")
+    return model
+
+
+def get_seq_mask(lengths: torch.Tensor, max_len: int = None) -> torch.Tensor:
+    """生成序列掩码"""
+    if lengths.dim() == 2:
+        lengths = lengths.squeeze(-1)
+    
+    if max_len is None:
+        max_len = lengths.max().item()
+    
+    mask = torch.arange(max_len, device=lengths.device).unsqueeze(0) < lengths.unsqueeze(1)
+    return mask
+
+
+def get_initial_masks(input_columns: Dict, seq_mask: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """初始化掩码字典"""
+    masks = {}
+    batch_size, seq_len = seq_mask.shape
+    
+    for key, column in input_columns.items():
+        if column.get('is_sequence', False):
+            masks[key] = torch.zeros_like(seq_mask, dtype=torch.bool)
+        else:
+            masks[key] = torch.ones(batch_size, dtype=torch.bool)
+    
+    return masks
+
+
+def set_visual_default(item: Dict) -> Dict:
+    """设置可视化默认值"""
+    item = item.copy()
+    for elem in item.get('elements', []):
+        if 'color' not in elem or elem['color'] is None:
+            elem['color'] = [0, 0, 0]
+        if 'opacity' not in elem or elem['opacity'] is None:
+            elem['opacity'] = 1.0
+        if 'font_family' not in elem or elem['font_family'] is None:
+            elem['font_family'] = 'DummyFont'
+    return item
+
+
+def tensor_to_list(
+    data: Dict,
+    type_mapping: Dict[int, str],
+    font_mapping: Optional[Dict[int, str]] = None
+) -> List[Dict]:
+    """
+    将批次张量转换为样本列表（支持类型和字体解码）
+    
+    Args:
+        data: 批次数据字典
+        type_mapping: 类型ID到名称的映射
+        font_mapping: 字体ID到名称的映射（可选）
+    
+    Returns:
+        样本列表
+    """
+    batch_size = data['length'].size(0)
+    items = []
+    
+    for i in range(batch_size):
+        item = {
+            'id': data['id'][i] if 'id' in data else f'sample_{i}',
+            'canvas_width': data['canvas_width'][i].item() if 'canvas_width' in data else 800,
+            'canvas_height': data['canvas_height'][i].item() if 'canvas_height' in data else 600,
+            'length': data['length'][i].item(),
+            'elements': []
+        }
+        
+        length = item['length'] + 1
+        
+        for j in range(length):
+            element = {}
+            
+            for key, value in data.items():
+                if key in ['id', 'length', 'canvas_width', 'canvas_height']:
+                    continue
+                
+                if not torch.is_tensor(value):
+                    continue
+                    
+                if value.dim() >= 2 and value.size(1) > j:
+                    elem_value = value[i, j]
+                    
+                    # === 特殊处理：type字段需要解码为字符串 ===
+                    if key == 'type':
+                        type_id = None
+                        if elem_value.dim() == 0:
+                            type_id = elem_value.item()
+                        elif elem_value.dim() == 1:
+                            if elem_value.size(0) == 1:
+                                type_id = elem_value[0].item()
+                            else:
+                                type_id = elem_value.argmax().item()
+                        else:
+                            type_id = elem_value.argmax(dim=-1)
+                            if type_id.dim() > 0:
+                                type_id = type_id[0].item()
+                            else:
+                                type_id = type_id.item()
+                        
+                        element[key] = type_mapping.get(int(type_id), '')
+                        continue
+                    
+                    # === 特殊处理：font_family也需要解码 ===
+                    if key == 'font_family' and font_mapping:
+                        font_id = None
+                        if elem_value.dim() == 0:
+                            font_id = elem_value.item()
+                        elif elem_value.dim() == 1:
+                            if elem_value.size(0) == 1:
+                                font_id = elem_value[0].item()
+                            else:
+                                font_id = elem_value.argmax().item()
+                        else:
+                            font_id = elem_value.argmax(dim=-1)
+                            if font_id.dim() > 0:
+                                font_id = font_id[0].item()
+                            else:
+                                font_id = font_id.item()
+                        
+                        element[key] = font_mapping.get(int(font_id), 'Arial')
+                        continue
+                    
+                    # 其他字段的常规处理
+                    if elem_value.dim() == 0:
+                        element[key] = elem_value.item()
+                    elif elem_value.dim() == 1:
+                        if elem_value.size(0) == 1:
+                            element[key] = elem_value[0].item()
+                        else:
+                            element[key] = elem_value.cpu().numpy().tolist()
+                    else:
+                        if elem_value.dim() == 2:
+                            indices = elem_value.argmax(dim=-1)
+                            if indices.size(0) == 1:
+                                element[key] = indices[0].item()
+                            else:
+                                element[key] = indices.cpu().numpy().tolist()
+                        else:
+                            element[key] = elem_value.cpu().numpy().tolist()
+            
+            item['elements'].append(element)
+        
+        items.append(item)
+    
+    return items
+
+
+def apply_task_masks(
+    example: Dict,
+    input_columns: Dict,
+    target_task: str,
+    attribute_groups: Dict,
+    device: str
+) -> Dict[str, torch.Tensor]:
+    """应用任务特定的掩码"""
+    seq_mask = get_seq_mask(example['length'], example['left'].size(1))
+    mfp_masks = get_initial_masks(input_columns, seq_mask)
+    
+    for key in mfp_masks.keys():
+        if not input_columns[key].get('is_sequence', False):
+            continue
+        
+        mask = mfp_masks[key].clone()
+        
+        if target_task == "elem":
+            mask[:, 0] = True
+        else:
+            if key == "type":
+                continue
+            
+            if target_task in attribute_groups:
+                attr_keys = attribute_groups[target_task]
+                if key in attr_keys:
+                    mask = seq_mask.clone()
+        
+        mfp_masks[key] = mask.to(device)
+    
+    return mfp_masks
+
+
+def model_inference_with_masks(model, inputs, masks):
+    """使用掩码进行模型推理"""
+    masked_inputs = {}
+    for key, value in inputs.items():
+        if key in masks and torch.is_tensor(value):
+            mask = masks[key]
+            if mask.any():
+                masked_value = value.clone()
+                if value.dim() == 3:
+                    masked_value[mask] = 0
+                masked_inputs[key] = masked_value
+            else:
+                masked_inputs[key] = value
+        else:
+            masked_inputs[key] = value
+    
+    outputs = model(masked_inputs)
+    return outputs
+
+
+def visualize_reconstruction(
+    model: torch.nn.Module,
+    example: Dict,
+    builders: Dict,
+    config: DemoConfig,
+    input_columns: Dict,
+    type_mapping: Dict[int, str],
+    font_mapping: Optional[Dict[int, str]] = None,
+):
+    """可视化重建结果"""
+    svgs = []
+    target_task = config.target_task
+    
+    # 使用类型映射转换
+    items = tensor_to_list(example, type_mapping, font_mapping)
+    
+    # GT布局和视觉
+    svgs.append(list(map(builders["layout"], items)))
+    svgs.append(list(map(builders["visual"], items)))
+    
+    # 输入可视化
+    if target_task == "txt":
+        svgs.append(list(map(builders["visual_wo_text"], items)))
+    elif target_task == "img":
+        svgs.append(list(map(builders["visual_wo_image"], items)))
+    elif target_task == "attr":
+        svgs.append(list(map(builders["visual"], [set_visual_default(x) for x in items])))
+    
+    # 应用掩码
+    mfp_masks = apply_task_masks(
+        example, input_columns, target_task,
+        config.attribute_groups, config.device
+    )
+    
+    # 元素级任务
+    if target_task == "elem":
+        example_copy = {}
+        for key, value in example.items():
+            if isinstance(value, torch.Tensor) and value.dim() >= 2 and value.size(1) > 1:
+                indices = torch.where(~mfp_masks[key][0, :])[0]
+                example_copy[key] = torch.index_select(value, 1, indices)
+            else:
+                example_copy[key] = value
+        
+        example_copy['length'] = example['length'] - 1
+        items_copy = tensor_to_list(example_copy, type_mapping, font_mapping)
+        svgs.append(list(map(builders["layout"], items_copy)))
+        svgs.append(list(map(builders["visual"], items_copy)))
+    
+    # 模型预测
+    with torch.no_grad():
+        pred = model_inference_with_masks(model, example, mfp_masks)
+    
+    for key in example:
+        if key not in pred:
+            pred[key] = example[key]
+    
+    # 预测结果也需要类型映射
+    pred_items = tensor_to_list(pred, type_mapping, font_mapping)
+    
+    if target_task in ["pos", "elem"]:
+        svgs.append(list(map(builders["layout"], pred_items)))
+    svgs.append(list(map(builders["visual"], pred_items)))
+    
+    return list(zip(*svgs))
+
+
+# ==================== 主函数 ====================
+
+def main():
+    """主函数"""
+    config = DemoConfig()
+    
+    logger.info("="*80)
+    logger.info("MFP PyTorch Demo - 完整修复版")
+    logger.info("="*80)
+    
+    # 加载数据集
+    logger.info(f"\n1. 加载数据集: {config.db_root}")
+    dataset = DesignLayoutDataset(
+        config.db_root,
+        split='test',
+        max_length=20
+    )
+    
+    # 加载类型映射
+    logger.info("\n2. 加载类型映射")
+    vocab_file = Path(config.db_root).parent / "vocabulary.json"
+    type_mapping = load_type_mapping_from_vocab(str(vocab_file))
+    
+    # 加载字体映射
+    font_mapping = load_font_mapping_from_dataset(dataset)
+    if font_mapping:
+        logger.info(f"✓ 字体映射: {len(font_mapping)} 个字体")
+    
+    # 创建DataLoader
+    from torch.utils.data import DataLoader
+    from dataset import collate_fn
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn
+    )
+    
+    example = next(iter(dataloader))
+    
+    for key in example:
+        if torch.is_tensor(example[key]):
+            example[key] = example[key].to(config.device)
+    
+    # 加载input_columns
+    logger.info("\n3. 加载模型配置")
+    input_columns_file = './input_columns_generated.json'
+    with open(input_columns_file, 'r') as f:
+        input_columns = json.load(f)
+    
+    # 加载模型
+    logger.info("\n4. 加载模型")
+    checkpoint_path = Path(config.ckpt_dir) / "best_pytorch.pth"
+    model = load_model(str(checkpoint_path), input_columns, config.device)
+    
+    # 构建检索数据库
+    logger.info("\n5. 构建检索数据库")
+    db_root = Path(config.db_root).parent / config.dataset_name
+    
+    image_db = ImageRetriever(db_root, image_path=db_root / "images")
+    image_db.build("test")
+    
+    text_db = TextRetriever(db_root, text_path=db_root / "texts")
+    text_db.build("test")
+    
+    # 创建SVG构建器
+    logger.info("\n6. 创建SVG构建器")
+    builders = {}
+    
+    builders["layout"] = SVGBuilder(
+        max_width=128,
+        max_height=192,
+        key="type",
+    )
+    
+    patterns = [
+        ("visual", image_db, text_db),
+        ("visual_wo_text", image_db, None),
+        ("visual_wo_image", None, text_db),
+    ]
+    
+    for (name, idb, tdb) in patterns:
+        builders[name] = SVGBuilder(
+            max_width=128,
+            max_height=192,
+            key="color",
+            image_db=idb,
+            text_db=tdb,
+            render_text=True,
+        )
+    
+    # 可视化重建
+    logger.info(f"\n7. 开始可视化 - 任务: {config.target_task}")
+    svgs = visualize_reconstruction(
+        model, example, builders, config, input_columns,
+        type_mapping, font_mapping
+    )
+    
+    # 保存结果
+    logger.info("\n8. 保存结果")
+    output_base = Path(config.output_dir) / config.target_task
+    
+    save_visualization_grid(
+        svgs=svgs,
+        output_dir=output_base / "individual",
+        column_names=config.column_names[config.target_task],
+        prefix=f"{config.target_task}_sample"
+    )
+    
+    if HAS_CAIROSVG and len(svgs) > 0:
+        try:
+            create_comparison_image(
+                svgs=svgs[:min(8, len(svgs))],
+                output_path=output_base / f"comparison_{config.target_task}.png",
+                column_names=config.column_names[config.target_task],
+                samples_per_row=2,
+                svg_width=200,
+                svg_height=300,
+            )
+        except Exception as e:
+            logger.error(f"创建对比图失败: {e}")
+    
+    logger.info("\n" + "="*80)
+    logger.info("✓ Demo完成!")
+    logger.info(f"结果保存在: {output_base.absolute()}")
+    logger.info("="*80)
+
+
+if __name__ == "__main__":
+    main()
+
+svg_builder_pytorch.py
+"""
+PyTorch版本的SVG构建器
+用于将布局数据转换为SVG可视化
+"""
+
+import xml.etree.ElementTree as ET
+from typing import Dict, Optional
+import numpy as np
+
+
+class SVGBuilder:
+    """SVG构建器"""
+    
+    def __init__(
+        self,
+        key: str = 'type',
+        colormap: Optional[Dict] = None,
+        canvas_width: int = 256,
+        canvas_height: int = 256,
+        max_width: Optional[int] = None,
+        max_height: Optional[int] = None,
+        opacity: float = 0.5,
+        image_db = None,
+        text_db = None,
+        render_text: bool = False,
+        **kwargs
+    ):
+        """
+        Args:
+            key: 用于着色的键 ('type' 或 'color')
+            colormap: 颜色映射字典
+            canvas_width: 画布宽度
+            canvas_height: 画布高度
+            max_width: 最大显示宽度
+            max_height: 最大显示高度
+            opacity: 不透明度
+            image_db: 图像检索数据库
+            text_db: 文本检索数据库
+            render_text: 是否渲染文本
+        """
+        self.key = key
+        self.canvas_width = canvas_width
+        self.canvas_height = canvas_height
+        self.max_width = max_width
+        self.max_height = max_height
+        self.opacity = opacity
+        self.image_db = image_db
+        self.text_db = text_db
+        self.render_text = render_text
+        
+        # 颜色映射
+        if colormap is None and key != 'color':
+            self.colormap = self._make_default_colormap()
+        else:
+            self.colormap = colormap or {}
+    
+    def _make_default_colormap(self) -> Dict:
+        """创建默认颜色映射"""
+        # 常见元素类型的颜色
+        return {
+            'imageElement': 'rgb(66, 166, 246)',
+            'textElement': 'rgb(241, 98, 147)',
+            'svgElement': 'rgb(175, 214, 130)',
+            'maskElement': 'rgb(79, 196, 248)',
+            'coloredBackground': 'rgb(226, 191, 232)',
+            'humanElement': 'rgb(255, 139, 101)',
+            '': 'none',
+        }
+    
+    def compute_canvas_size(self, document: Dict):
+        """计算画布大小"""
+        canvas_width = document.get('canvas_width', self.canvas_width)
+        canvas_height = document.get('canvas_height', self.canvas_height)
+        
+        scale = 1.0
+        if self.max_width is not None:
+            scale = min(self.max_width / canvas_width, scale)
+        if self.max_height is not None:
+            scale = min(self.max_height / canvas_height, scale)
+        
+        return canvas_width * scale, canvas_height * scale
+    
+    def __call__(self, document: Dict) -> str:
+        """
+        将文档转换为SVG字符串
+        
+        Args:
+            document: 文档字典
+        
+        Returns:
+            SVG字符串
+        """
+        canvas_width, canvas_height = self.compute_canvas_size(document)
+        
+        # 创建SVG根元素
+        root = ET.Element(
+            'svg',
+            {
+                'width': str(int(canvas_width)),
+                'height': str(int(canvas_height)),
+                'viewBox': '0 0 1 1',
+                'style': 'background-color: #FFF',
+                'preserveAspectRatio': 'none',
+                'xmlns': 'http://www.w3.org/2000/svg',
+            }
+        )
+        
+        # 添加元素
+        for element in document.get('elements', []):
+            self._add_element(root, element, document)
+        
+        # 转换为字符串
+        return ET.tostring(root, encoding='unicode')
+    
+    def _add_element(self, parent, element: Dict, document: Dict):
+        """添加单个元素到SVG"""
+        # 获取颜色
+        if self.key == 'color':
+            color = element.get('color', [0, 0, 0])
+            if isinstance(color, list):
+                fill = f'rgb({int(color[0])},{int(color[1])},{int(color[2])})'
+            else:
+                fill = 'rgb(0,0,0)'
+        else:
+            element_type = element.get(self.key, '')
+            # 处理可能是列表的情况
+            if isinstance(element_type, list):
+                element_type = element_type[0] if element_type else ''
+            # 处理可能是数字的情况
+            if isinstance(element_type, (int, float)):
+                element_type = str(int(element_type))
+            fill = self.colormap.get(element_type, 'rgb(128,128,128)')
+        
+        # 获取位置和尺寸
+        left = float(element.get('left', 0))
+        top = float(element.get('top', 0))
+        width = float(element.get('width', 0.1))
+        height = float(element.get('height', 0.1))
+        opacity = float(element.get('opacity', 1.0))
+        
+        # 检查是否需要渲染图像或文本
+        image_url = None
+        if self.image_db and element.get('type') in ['imageElement', 'svgElement', 'maskElement']:
+            if 'image_embedding' in element:
+                image_url = self.image_db.search(element['image_embedding'])
+        
+        text_content = None
+        if self.text_db and element.get('type') == 'textElement':
+            if 'text_embedding' in element:
+                text_content = self.text_db.search(element['text_embedding'])
+        
+        # 创建元素
+        if image_url and image_url != '':
+            # 图像元素
+            elem = ET.SubElement(
+                parent,
+                'image',
+                {
+                    'x': str(left),
+                    'y': str(top),
+                    'width': str(width),
+                    'height': str(height),
+                    'href': image_url,
+                    'opacity': str(opacity * self.opacity),
+                    'preserveAspectRatio': 'none',
+                }
+            )
+        elif self.render_text and text_content:
+            # 文本元素
+            container = ET.SubElement(
+                parent,
+                'svg',
+                {
+                    'x': str(left),
+                    'y': str(top),
+                    'width': str(width),
+                    'height': str(height),
+                    'overflow': 'visible',
+                }
+            )
+            
+            text_elem = ET.SubElement(
+                container,
+                'text',
+                {
+                    'x': '50%',
+                    'y': '50%',
+                    'text-anchor': 'middle',
+                    'dominant-baseline': 'middle',
+                    'fill': fill,
+                    'font-size': str(height * 0.8),
+                    'font-family': element.get('font_family', 'Arial'),
+                }
+            )
+            text_elem.text = str(text_content)[:50]  # 限制长度
+        else:
+            # 矩形元素
+            elem = ET.SubElement(
+                parent,
+                'rect',
+                {
+                    'x': str(left),
+                    'y': str(top),
+                    'width': str(width),
+                    'height': str(height),
+                    'fill': fill,
+                    'opacity': str(opacity * self.opacity),
+                }
+            )
+        
+        # 添加标题（用于hover显示）
+        title = ET.SubElement(elem if not (self.render_text and text_content) else container, 'title')
+        title.text = str({k: v for k, v in element.items() if not isinstance(v, (list, np.ndarray))})
+
+
+# 测试代码
+if __name__ == "__main__":
+    # 创建测试文档
+    test_doc = {
+        'id': 'test_001',
+        'canvas_width': 800,
+        'canvas_height': 600,
+        'length': 3,
+        'elements': [
+            {
+                'type': 'imageElement',
+                'left': 0.1,
+                'top': 0.1,
+                'width': 0.3,
+                'height': 0.3,
+                'color': [255, 0, 0],
+                'opacity': 1.0,
+            },
+            {
+                'type': 'textElement',
+                'left': 0.5,
+                'top': 0.5,
+                'width': 0.3,
+                'height': 0.1,
+                'color': [0, 0, 255],
+                'opacity': 1.0,
+                'font_family': 'Arial',
+            },
+            {
+                'type': 'coloredBackground',
+                'left': 0.0,
+                'top': 0.0,
+                'width': 1.0,
+                'height': 1.0,
+                'color': [240, 240, 240],
+                'opacity': 0.5,
+            },
+        ]
+    }
+    
+    # 测试布局构建器
+    builder = SVGBuilder(key='type', max_width=400)
+    svg = builder(test_doc)
+    print("SVG生成成功!")
+    print(f"SVG长度: {len(svg)} 字符")
+    
+    # 保存到文件
+    with open('test_layout.svg', 'w') as f:
+        f.write(svg)
+    print("✓ 已保存到 test_layout.svg")

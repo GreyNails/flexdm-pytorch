@@ -1,0 +1,794 @@
+retrive.py
+
+import logging
+from base64 import b64encode
+from pathlib import Path
+from typing import Any, Dict, Union
+
+import faiss
+import numpy as np
+import tensorflow as tf
+from mfp.data import DataSpec
+
+logger = logging.getLogger(__name__)
+
+
+class _Retriever(object):
+    """Image retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str,
+        value: str,
+        condition: Dict[str, Any] = None,
+        dim: int = 512,
+        # image_path=None,
+        # **kwargs,
+    ):
+        self._path = path
+        # self._dataspec = DataSpec("crello-images", path, **kwargs)
+        self._dataspec = None
+        self._key = key
+        self._value = value
+        self._condition = condition
+        self._dim = dim
+
+        #  or {
+        #     "key": "type",
+        #     "values": ("imageElement", "maskElement", "svgElement"),
+        # }
+        # self._image_path = image_path or os.path.join(self._path, "images")
+
+    @property
+    def key(self):
+        return self._key
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def condition(self):
+        return self._condition
+
+    def build(self, split="train"):
+        """Build index."""
+        logger.info("Fetching image embeddings...")
+        dataset = self._dataspec.make_dataset(split)
+
+        # Deduplicate entries.
+        d = {}
+        for batch in dataset:
+            keys = tf.reshape(batch[self._key], (-1, tf.shape(batch[self._key])[-1]))
+            values = tf.reshape(
+                batch[self._value], (-1, tf.shape(batch[self._value])[-1])
+            )
+            for i in range(tf.shape(keys)[0]):
+                d[keys[i, 0].numpy()] = values[i].numpy()
+
+        # Build faiss index.
+        logger.info("Building image index...")
+        labels = np.array(list(d.keys()))
+        data = np.stack(list(d.values()))
+        db = faiss.IndexFlatL2(self._dim)
+        db.add(data)
+
+        self._labels = labels
+        self._db = db
+
+    def get_url(self, index: int):
+        raise NotImplementedError
+
+    def search(self, query, k=1):
+        if not isinstance(query, np.ndarray):
+            query = np.array([query], dtype=np.float32)
+
+        _, index = self._db.search(query, k)
+        urls = [self.get_url(i) for i in index[0].tolist()]
+        if k == 1:
+            return urls[0]
+        return urls
+
+
+class ImageRetriever(_Retriever):
+    """Image retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str = "image_hash",
+        value: str = "image_embedding",
+        condition: Dict[str, Any] = None,
+        image_path: Path = None,
+        dim: int = 512,
+        **kwargs,
+    ):
+        super().__init__(path, key, value, condition, dim)
+        self._dataspec = DataSpec("crello-images", path, **kwargs)
+        if self._condition is None:
+            self._condition = {
+                "key": "type",
+                "values": ("imageElement", "maskElement", "svgElement"),
+            }
+        self._image_path = image_path or self._path / "images"
+
+    def get_url(self, index: int):
+        label = self._labels[index]
+        if label:
+            return make_data_uri(self._image_path / (label.decode() + ".png"))
+        return ""
+
+
+class TextRetriever(_Retriever):
+    """Text retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str = "text_hash",
+        value: str = "text_embedding",
+        condition: Dict[str, Any] = None,
+        text_path: Path = None,
+        dim: int = 512,
+        **kwargs,
+    ):
+        super().__init__(path, key, value, condition, dim)
+        self._dataspec = DataSpec("crello-texts", path, **kwargs)
+        if self._condition is None:
+            self._condition = {
+                "key": "type",
+                "values": ("textElement",),
+            }
+        self._text_path = text_path or self._path / "texts"
+
+    def get_url(self, index: int):
+        label = self._labels[index]
+        if label:
+            url = self._text_path / (label.decode() + ".txt")
+            with tf.io.gfile.GFile(str(url), "rb") as f:
+                text = f.read()
+            return text.decode()
+        return ""
+
+svg_crello.py
+"""
+Original implementation directly parsing crawled data.
+"""
+
+import logging
+import math
+import os
+import pickle
+import xml.etree.ElementTree as ET
+from itertools import chain, groupby, repeat
+
+from mfp.data.crello import schema
+
+NS = {
+    "svg": "http://www.w3.org/2000/svg",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "xhtml": "http://www.w3.org/1999/xhtml",
+}
+ET.register_namespace("", NS["svg"])
+ET.register_namespace("xlink", NS["xlink"])
+ET.register_namespace("html", NS["xhtml"])
+
+logger = logging.getLogger(__name__)
+
+# DUMMY_TEXT = '''
+# Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
+# incididunt ut labore et dolore magna aliqua.
+# '''
+DUMMY_TEXT = """
+TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT
+"""
+
+PKL_DIR = f"{os.path.dirname(__file__)}/../../../../data/crello/pkls"
+
+
+def load_fonts_css(path: str):
+    """
+    Load font-family to stylesheet rules mapping.
+    Get css from
+    """
+    import tinycss
+
+    parser = tinycss.make_parser("fonts3")
+    stylesheet = parser.parse_stylesheet_file(path)
+    faces = [
+        {
+            decl.name: decl.value.as_css().replace("_old", "")
+            for decl in rule.declarations
+        }
+        for rule in stylesheet.rules
+    ]
+    return {
+        face: list(it) for face, it in groupby(faces, lambda x: x.get("font-family"))
+    }
+
+
+class SVGBuilder(object):
+    """
+    Utility to generate SVG for visualization.
+
+    Usage::
+
+        dataspec = DataSpec(...)
+        dataset = dataspec.make_dataset('val')
+        example = next(iter(dataset))
+
+        # Manual colormap.
+        builder = SVGBuilder(
+            'type',
+            colormap={
+                '': 'none',
+                'svgElement': 'blue',
+                'textElement': 'red',
+                'imageElement': 'green',
+                'maskElement': 'cyan',
+                'coloredBackground': 'magenta',
+                'videoElement': 'yellow',
+            },
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+        # Auto colormap by preprocessor.
+        builder = SVGBuilder(
+            'component',
+            preprocessor=dataspec.preprocessor,
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+    """
+
+    def __init__(
+        self,
+        key=None,
+        preprocessor=None,
+        colormap=None,
+        canvas_width=None,
+        canvas_height=None,
+        max_width=None,
+        max_height=None,
+        opacity=0.5,
+        image_db=None,
+        text_db=None,
+        render_text=False,
+        **kwargs,
+    ):
+        assert key
+        self._key = key
+        self._canvas_width = canvas_width or 256
+        self._canvas_height = canvas_height or 256
+        self._max_width = max_width
+        self._max_height = max_height
+        self._opacity = opacity
+        self._render_text = render_text
+        assert preprocessor or colormap
+        if preprocessor is None or key == "color":
+            self._colormap = colormap
+        else:
+            vocabulary = preprocessor[key].get_vocabulary()
+            self._colormap = self._make_colormap(vocabulary, colormap)
+        self._image_db = image_db
+        self._text_db = text_db
+        self.fonts = load_fonts_css(
+            os.path.dirname(__file__) + "/../data/crello/fonts.css"
+        )
+
+    def __call__(self, document):
+        canvas_width, canvas_height = self.compute_canvas_size(document)
+        root = ET.Element(
+            ET.QName(NS["svg"], "svg"),
+            {
+                "width": str(canvas_width),
+                "height": str(canvas_height),
+                "viewBox": "0 0 1 1",
+                # 'style': 'background-color: #EEE',
+                "style": "background-color: #FFF",
+                "preserveAspectRatio": "none",
+            },
+        )
+
+        doc_size = {
+            "width": document["canvas_width"],
+            "height": document["canvas_height"],
+        }
+
+        # # load pickled data
+        id_ = document["id"].decode()
+        pkl_file = f"{PKL_DIR}/{id_[:3]}/{id_}.pkl"
+        with open(pkl_file, "rb") as f:
+            pkl_data = pickle.load(f)
+        pkl_elements = pkl_data.template[0].elements
+        pkl_uuids = [e.uuid for e in pkl_elements]
+
+        if len(pkl_elements) != len(document["elements"]):
+            plen = len(pkl_elements)
+            elen = len(document["elements"])
+            logger.warning(f"#elements mismatch {plen},{elen} for pkl, tfr")
+
+        # find one-to-one correspondense
+        doc2pkl = {}
+        for i, element in enumerate(document["elements"]):
+            uuid_ = element["uuid"].decode()
+            try:
+                doc2pkl[i] = pkl_uuids.index(uuid_)
+            except ValueError:
+                logger.warning(f"Not found: {uuid_}")
+
+        for i, element in enumerate(document["elements"]):
+            if i not in doc2pkl:  # with very low prob. it cannot be found
+                continue
+            if self._key == "color":
+                fill = "rgb(%g,%g,%g)" % tuple(map(int, element["color"]))
+            else:
+                fill = self._colormap.get(element[self._key], "none")
+
+            image_url = ""
+            if self._image_db:
+                if (
+                    element.get(self._image_db.condition["key"])
+                    in self._image_db.condition["values"]
+                ):
+                    image_url = self._image_db.search(element[self._image_db.value])
+
+            if self._text_db:
+                if (
+                    element.get(self._text_db.condition["key"])
+                    in self._text_db.condition["values"]
+                ):
+                    text = self._text_db.search(element[self._text_db.value])
+                else:
+                    text = DUMMY_TEXT
+            else:
+                text = DUMMY_TEXT
+
+            if image_url:
+                node = self._make_image(root, element, image_url)
+            elif self._render_text and element.get("type") == "textElement":
+                node = self._make_text_element(
+                    root,
+                    element,
+                    fill,
+                    doc_size,
+                    text,
+                    pkl_elements[doc2pkl[i]],
+                )
+            else:
+                node = self._make_rect(root, element, fill)
+
+            title = ET.SubElement(node, ET.QName(NS["svg"], "title"))
+            title.text = str(
+                {
+                    k: v
+                    for k, v in element.items()
+                    # if not (self._image_db and k == self._image_db.value)
+                    # to filter out large array like image/text_embedding
+                    if not isinstance(v, list)
+                }
+            )
+
+        # get links for fonts
+        style = ET.SubElement(root, "{%s}style" % NS["svg"])
+        self._fill_stylesheet(root, style)
+
+        return ET.tostring(root).decode("utf-8")
+
+    def _fill_stylesheet(self, root, style):
+        font_families = {
+            text.get("font-family")
+            for text in root.iter("{%s}text" % NS["svg"])
+            if text.get("font-family") is not None
+        }
+        style.text = "\n".join(
+            "@font-face { %s }" % " ".join("%s: %s;" % (key, item[key]) for key in item)
+            for item in chain.from_iterable(
+                self.fonts.get(family, []) for family in font_families
+            )
+        )
+
+    def compute_canvas_size(self, document):
+        canvas_width = document.get("canvas_width", self._canvas_width)
+        canvas_height = document.get("canvas_height", self._canvas_height)
+        scale = 1.0
+        if self._max_width is not None:
+            scale = min(self._max_width / canvas_width, scale)
+        if self._max_height is not None:
+            scale = min(self._max_height / canvas_height, scale)
+        return canvas_width * scale, canvas_height * scale
+
+    def _make_colormap(self, vocabulary, colormap=None):
+        """
+        Generate a colormap for the specified vocabulary list.
+        """
+        from matplotlib import cm
+
+        vocab_size = len(vocabulary)
+        cmap = cm.get_cmap(colormap or "tab20", vocab_size)
+        return {
+            label: "rgb(%g,%g,%g)" % tuple(int(x * 255) for x in c[:3])
+            for label, c in zip(vocabulary, cmap(range(vocab_size)))
+        }
+
+    def _make_text_element(
+        self, parent, element, fill, doc_size, text_str, pkl_element
+    ):
+        def _make_map(m, default_key=None):
+            return chain.from_iterable(
+                repeat(
+                    (x.get("type", default_key), x["value"]),
+                    x["endIndex"] - x["startIndex"],
+                )
+                for x in m
+            )
+
+        def _generate_spans(text, style_map):
+            offset = 0
+            for style, it in groupby(style_map):
+                length = len(list(it)) + 1
+                item = dict(style)
+                item["text"] = text[offset : offset + length]
+                yield item
+                offset += length
+
+        def _make_linespans(text, pkl_element):
+            style_map = list(
+                zip(
+                    _make_map(pkl_element.colorMap, default_key="color"),
+                    _make_map(pkl_element.boldMap, default_key="bold"),
+                    _make_map(pkl_element.italicMap, default_key="italic"),
+                )
+            )
+            br_inds = [i for (i, t) in enumerate(text) if t == "\n"]
+
+            if pkl_element.lineMap is not None:
+                default_line_map = []
+            elif len(br_inds) == 0:
+                default_line_map = [
+                    {"startIndex": 0, "endIndex": len(pkl_element.text)}
+                ]
+            else:
+                default_line_map = []
+                start = 0
+                for ind in br_inds:
+                    default_line_map.append({"startIndex": start, "endIndex": ind - 1})
+                    start = ind + 1
+                default_line_map.append(
+                    {"startIndex": start, "endIndex": len(text) - 1}
+                )
+
+            for line in pkl_element.lineMap or default_line_map:
+                start = line["startIndex"]
+                end = line["endIndex"] + 1
+
+                line_text = text[start:end]
+                line_style_map = style_map[start:end]
+                yield _generate_spans(line_text, line_style_map)
+
+        margin = element["height"] * 0.1  # To avoid unexpected clipping.
+        container = ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "svg"),
+            {
+                "id": element["uuid"].decode(),
+                "class": element["type"],
+                "x": "%g" % (element["left"] or 0),
+                "y": "%g" % ((element["top"] or 0) - margin),
+                "width": "%g" % (element["width"]),
+                "overflow": "visible",
+            },
+        )
+        opacity = element.get("opacity", 1.0)
+        if opacity < 1:
+            container.set("opacity", "%g" % opacity)
+
+        # in element filling, different type might be used
+        # in that case, we should somehow feed default values
+        font_size = (
+            getattr(pkl_element, "fontSize", doc_size["height"]) / doc_size["height"]
+        )
+        text_align = getattr(pkl_element, "textAlign", "center")
+        line_height = getattr(pkl_element, "lineHeight", 1.0)
+        capitalize = getattr(pkl_element, "capitalize", False)
+        underline = getattr(pkl_element, "underline", False)
+        letter_spacing = getattr(pkl_element, "letterSpacing", doc_size["width"])
+        if letter_spacing is None:
+            letter_spacing = 0.0
+        else:
+            letter_spacing /= doc_size["width"]
+
+        if not getattr(pkl_element, "lineMap", False):
+            setattr(pkl_element, "lineMap", None)
+        if not getattr(pkl_element, "colorMap", False):
+            setattr(pkl_element, "colorMap", [])
+        if not getattr(pkl_element, "boldMap", False):
+            setattr(pkl_element, "boldMap", [])
+        if not getattr(pkl_element, "italicMap", False):
+            setattr(pkl_element, "italicMap", [])
+        if not getattr(pkl_element, "text", False):
+            setattr(pkl_element, "text", "a" * 1000)
+
+        text = ET.SubElement(
+            container,
+            "{%s}text" % NS["svg"],
+            {
+                "font-size": "%g" % font_size,
+                "font-family": element["font_family"],
+                "letter-spacing": "%g" % letter_spacing,
+            },
+        )
+
+        if underline:
+            text.set("text-decoration", "underline")
+        if pkl_element.angle is not None and pkl_element.angle != 0:
+            # Note: Chromium clips the svg region.
+            angle = 180 * (pkl_element.angle / math.pi)
+            text.set(
+                "transform",
+                "rotate(%g, %g, %g)"
+                % (angle, element["width"] / 2, element["height"] / 2),
+            )
+        x = {"left": "0", "center": "50%", "right": "100%"}[text_align]
+        anchor = {"left": "start", "center": "middle", "right": "end"}[text_align]
+
+        line_height = line_height * font_size
+
+        # print('L343', fill)
+        for index, line in enumerate(_make_linespans(text_str, pkl_element)):
+            line_tspan = ET.SubElement(
+                text,
+                "{%s}tspan" % NS["svg"],
+                {
+                    "dy": "%g" % line_height,
+                    "x": x,
+                    "text-anchor": anchor,
+                    "dominant-baseline": "central",
+                },
+            )
+            if index == 0:
+                text.set("y", "%g" % (margin))
+                line_tspan.set("dy", "%g" % (line_height / 2))
+            for span in line:
+
+                def f(x):
+                    # convert 'rgb(255,255,255)' to 'FFFFFF'
+                    values = [
+                        "{:02x}".format(int(s)).upper() for s in x[4:-1].split(",")
+                    ]
+                    return "".join(values)
+
+                color = f(fill)
+
+                # print('L359', span['color'])
+                tspan = ET.SubElement(
+                    line_tspan,
+                    "{%s}tspan" % NS["svg"],
+                    {
+                        # 'fill': '#%s' % span['color'],
+                        "fill": "#%s" % color,
+                        "dominant-baseline": "central",
+                    },
+                )
+                tspan.text = span["text"].strip()
+                if span["bold"]:
+                    tspan.set("font-weight", "bold")
+                if span["italic"]:
+                    tspan.set("font-style", "italic")
+                if capitalize:
+                    # Capitalize at the leaf span for Safari compatibility.
+                    tspan.set("style", "text-transform: uppercase;")
+
+        return container
+
+    def _make_image(self, parent, element, image_url):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "image"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                ET.QName(NS["xlink"], "href"): image_url,
+                "opacity": str(element.get("opacity", 1.0)),
+                "preserveAspectRatio": "none",
+            },
+        )
+
+    def _make_rect(self, parent, element, fill):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "rect"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                "fill": str(fill),
+                "opacity": str(element.get("opacity", 1.0) * self._opacity),
+            },
+        )
+
+main.py
+
+
+
+builders = {}
+builders["layout"] = SVGBuilder(
+    max_width=128,
+    max_height=192,
+    key="type",
+    preprocessor=dataspec.preprocessor,
+)
+patterns = (
+    ("visual", image_db, text_db),
+    ("visual_wo_text", image_db, None),
+    ("visual_wo_image", None, text_db),
+)
+
+for (name, idb, tdb) in patterns:
+    builders[name] = SVGBuilder(
+        max_width=128,
+        max_height=192,
+        key="color",
+        preprocessor=dataspec.preprocessor,
+        image_db=idb,
+        text_db=tdb,
+        render_text=True,
+    )
+
+
+def make_data_uri(url: Union[str, Path], mime_type="image/png"):
+    if isinstance(url, Path):
+        url = str(url)
+    with tf.io.gfile.GFile(url, "rb") as f:
+        image_bytes = f.read()
+    data = b64encode(image_bytes).decode("ascii")
+    return "data:%s;base64,%s" % (mime_type, data)
+
+target_task = "pos"  # choose from: elem, pos, attr, txt, img
+column_names = {
+    "txt": ["gt-layout", "gt-visual", "input", "pred"],
+    "img": ["gt-layout", "gt-visual", "input", "pred"],
+    "attr": ["gt-layout", "gt-visual", "input", "pred"],
+    "pos": ["gt-layout", "gt-visual", "pred-layout", "pred-visual"],
+    "elem": ["gt-layout", "gt-visual", "input-layout", "input-visual", "pred-layout", "pred-visual"],
+}
+
+def visualize_reconstruction(
+    models: List[tf.keras.Model],
+    example: Dict,
+    dataspec: DataSpec
+):
+    svgs = []
+    items = dataspec.unbatch(example)
+    svgs.append(list(map(builders["layout"], items)))
+    svgs.append(list(map(builders["visual"], items)))
+    if target_task == "txt":
+        svgs.append(list(map(builders["visual_wo_text"], items)))
+    elif target_task == "img":
+        svgs.append(list(map(builders["visual_wo_image"], items)))
+    elif target_task == "attr":
+        svgs.append(list(map(builders["visual"], [set_visual_default(x) for x in items])))
+
+    seq_mask = get_seq_mask(example["length"])
+    mfp_masks = get_initial_masks(input_columns, seq_mask)
+
+    for key in mfp_masks.keys():
+        if not input_columns[key]["is_sequence"]:
+            continue
+        mask = mfp_masks[key].numpy()
+
+        if target_task == "elem":
+            target_indices = [0]  # hide first
+            for i in range(len(target_indices)):
+                mask[i, target_indices[i]] = True
+        else:
+            if key == "type":
+                continue
+            attr_groups = ATTRIBUTE_GROUPS["crello"][target_task]
+            if key in attr_groups:
+                mask = seq_mask
+
+        mfp_masks[key] = tf.convert_to_tensor(mask)
+
+    if target_task == "elem":
+        example_copy = {}
+        for key in example.keys():
+            # note: assuming similar mask place in a batch
+            if example[key].shape[1] > 1:
+                B, S = example[key].shape[:2]
+                indices = tf.where(~mfp_masks[key][0, :])[:, 0]
+                example_copy[key] = tf.gather(
+                    example[key], indices, axis=1
+                )
+                # print(key, example_copy[key].shape)
+            else:
+                example_copy[key] = example[key]
+        example_copy["length"] -= 1
+        items = dataspec.unbatch(example_copy)
+        svgs.append(list(map(builders["layout"], items)))
+        svgs.append(list(map(builders["visual"], items)))
+
+    for model in models:
+        pred = model(example, training=False, demo_args={"masks": mfp_masks})
+        for key in example:
+            if key not in pred:
+                pred[key] = example[key]
+                print(example['id'])
+
+        if target_task in ["pos", "elem"]:
+            svgs.append(list(map(builders["layout"], dataspec.unbatch(pred))))
+        svgs.append(list(map(builders["visual"], dataspec.unbatch(pred))))
+
+    return [list(grouper(row, len(column_names[target_task]))) for row in zip(*svgs)]
+
+iterator = iter(test_dataset.take(1))
+example = next(iterator)
+
+print(f"From left to right: {','.join(column_names[target_task])}")
+svgs = visualize_reconstruction(models.values(), example, dataspec)
+for i, row in enumerate(svgs):
+    print(i)
+    display(HTML("<div>%s</div>" % " ".join(itertools.chain.from_iterable(row))))
+
+
+special variables
+function variables
+'format' =
+b'Facebook cover'
+'length' =
+10
+'id' =
+b'5dbbfea2abc8ea6d1c14e913'
+'group' =
+b'HC'
+'category' =
+b'sportExtreme'
+'canvas_height' =
+315
+'canvas_width' =
+851
+'width' =
+[1.1121034622192383, 0.27262043952941895, 0.26133960485458374, 0.1057579293847084, 0.5593419671058655, 0.20152761042118073, 0.2220916599035263, 0.21680375933647156, 0.1374853104352951, 0.15041127800941467]
+'type' =
+[b'imageElement', b'svgElement', b'maskElement', b'svgElement', b'svgElement', b'textElement', b'svgElement', b'textElement', b'svgElement', b'textElement']
+'text_hash' =
+[b'bcf036b6f33e182d4705...f5b1af13ac', b'bcf036b6f33e182d4705...f5b1af13ac', b'bcf036b6f33e182d4705...f5b1af13ac', b'bcf036b6f33e182d4705...f5b1af13ac', b'bcf036b6f33e182d4705...f5b1af13ac', b'f589eafcf087c11af27e...5bafb047fa', b'bcf036b6f33e182d4705...f5b1af13ac', b'456a29cf32ae45eac03f...f9b955fa44', b'bcf036b6f33e182d4705...f5b1af13ac', b'b0e5c16957d8b352f560...f7c38a5a52']
+'image_hash' =
+[b'4a23e121a59596b15c4d...d3b36155d9', b'2b0b6181e19747219306...b35ec69321', b'ddd1d7cfcea50b99502c...88a53fa959', b'8c83f1c4dc3209bcfbc7...e4f5d79de0', b'7c8f7ebdc59e5810bd35...c702c79610', b'cd37744a985b79ed29bb...69e45da27f', b'96a9f601b9bcb93f6cd0...1f0c9ca8ea', b'cd37744a985b79ed29bb...69e45da27f', b'dac9411cd16e5c87ce6b...79ef0f2a08', b'cd37744a985b79ed29bb...69e45da27f']
+'image_embedding' =
+[[-0.15892302989959717, 0.45916473865509033, -0.5830442309379578, 0.10515283048152924, 0.00042475713416934013, 0.032017771154642105, 0.04864596202969551, 0.399717777967453, 0.9557327628135681, ...], [0.19737836718559265, -0.1905936449766159, -0.27299371361732483, -0.06585028022527695, 0.056848395615816116, -0.2840520739555359, -0.3953392803668976, 1.2850806713104248, 0.2503903806209564, ...], [-0.04768259823322296, 0.28581032156944275, -0.15932784974575043, -0.12782755494117737, 0.06147021800279617, -0.06552164256572723, 0.04176819697022438, 0.8291298151016235, 0.32598304748535156, ...], [-0.06946372240781784, -0.26868683099746704, -0.17371392250061035, 0.0913173034787178, 0.433529257774353, -0.41453781723976135, -0.2847863733768463, 1.1522716283798218, 0.3262879252433777, ...], [0.18874642252922058, -0.07683493942022324, -0.3984981179237366, 0.10618241131305695, 0.42037785053253174, -0.1470436155796051, -0.1484978049993515, 1.2851943969726562, 0.5123825073242188, ...], [-0.15034951269626617, -0.2633881270885...
+'uuid' =
+[b'4HtvT5BFxipgUnVJk7Ao...l73jdhtXID', b'a3V6xAWKpZYBGJijK3Wv...SWjiHJhzaU', b'sai3a0vLWVjcc4OpaEL5...MQgsz4cPGS', b'Mgm2eMxZIzEDzx615ikn...KMInE6vh5D', b'nel2J77ZC120Xb5uthbd...9By22AsayF', b'65A7jW75yiSnZDkzZzn3...gCnMeO7Srt', b'yYBwqMiM0KaXdC4N5FmX...mWjbPAsJ4e', b'cdwxEwcqaNomzybt7TVN...WdsQvHHioD', b'R19XR0UQGnVnEyx2Ja0S...XRCIFy9sbw', b'iIQyFrcVFegqFIy5Fur8...MStFOc5uKJ']
+'text_embedding' =
+[[0.03842202574014664, 0.08975290507078171, -0.23243100941181183, -0.03189079463481903, 0.2858487665653229, -0.11273667216300964, 0.08067253232002258, -1.4695996046066284, -0.020934022963047028, ...], [0.03842202574014664, 0.08975290507078171, -0.23243100941181183, -0.03189079463481903, 0.2858487665653229, -0.11273667216300964, 0.08067253232002258, -1.4695996046066284, -0.020934022963047028, ...], [0.03842202574014664, 0.08975290507078171, -0.23243100941181183, -0.03189079463481903, 0.2858487665653229, -0.11273667216300964, 0.08067253232002258, -1.4695996046066284, -0.020934022963047028, ...], [0.03842202574014664, 0.08975290507078171, -0.23243100941181183, -0.03189079463481903, 0.2858487665653229, -0.11273667216300964, 0.08067253232002258, -1.4695996046066284, -0.020934022963047028, ...], [0.03842202574014664, 0.08975290507078171, -0.23243100941181183, -0.03189079463481903, 0.2858487665653229, -0.11273667216300964, 0.08067253232002258, -1.4695996046066284, -0.020934022963047028, ...], [0.3500804305076599, 0....
+'font_family' =
+[b'DummyFont', b'DummyFont', b'DummyFont', b'DummyFont', b'DummyFont', b'Yanone Kaffeesatz', b'DummyFont', b'Yanone Kaffeesatz', b'DummyFont', b'Yanone Kaffeesatz']
+'color' =
+[[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 1], [0, 0, 0], [231, 53, 60], [0, 0, 0], [255, 255, 255]]
+'font_size' =
+[0.0, 0.0, 0.0, 0.0, 0.0, 0.29523810744285583, 0.0, 0.29206350445747375, 0.0, 0.05079365149140358]
+'top' =
+[0.0, 0.30793651938438416, 0.21269841492176056, 0.8355555534362793, -0.1653968244791031, 0.12008100748062134, 0.20000000298023224, 0.276451051235199, 0.8038095235824585, 0.8242316842079163]
+'ratio_w_to_h' =
+[0.899196982383728, 1.409017562866211, 2.242414712905884, 0.8705114722251892, 2.639155626296997, 1.4650007486343384, 2.701587200164795, 1.347132921218872, 0.6696242094039917, 0.33769840002059937]
+'opacity' =
+[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+'height' =
+[1.0, 0.3841269910335541, 0.5860317349433899, 0.09206349402666092, 1.476190447807312, 0.29523810744285583, 0.6000000238418579, 0.29206350445747375, 0.09206349402666092, 0.05079365149140358]
+'left' =
+[0.09012925624847412, -0.04112808406352997, 0.18719154596328735, 0.3626321852207184, -0.035722680389881134, 0.43025699257850647, 0.1833137422800064, 0.43779969215393066, 0.3774383068084717, 0.3948228657245636]
+len() =
+22
+
+
+尝试分析如何通过text_embedding,image_embedding,text_hash,image_hash，uuid找到我想要的text和image的，uuid是什么,请对上面的代码做详细分析
+
+中文回答我

@@ -1,0 +1,15 @@
+.env
+.mypy_cache
+
+data/*
+results/*
+tmp/
+pyproject.toml
+
+*.pyc
+*.egg-info
+*gcp*
+data/
+chechpoints/
+scripts/outputs/
+scripts/outputs_v1/

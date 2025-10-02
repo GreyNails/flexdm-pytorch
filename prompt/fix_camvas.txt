@@ -1,0 +1,1043 @@
+demo.ipynb
+"""
+MFP PyTorch Demo - Jupyter Notebook版本
+直接在notebook中显示SVG可视化结果
+"""
+
+# ============================================================
+# Cell 1: 导入依赖
+# ============================================================
+import json
+import itertools
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import torch
+import numpy as np
+from IPython.display import display, HTML
+import matplotlib.pyplot as plt
+
+# 导入自定义模块
+from models_pytorch import MFP
+from dataset import DesignLayoutDataset
+from svg_builder_pytorch_v3 import SVGBuilder
+from retriever_pytorch import ImageRetriever, TextRetriever
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# 设置随机种子
+torch.manual_seed(0)
+np.random.seed(0)
+
+print("✓ 导入完成")
+
+
+# ============================================================
+# Cell 2: 配置参数
+# ============================================================
+class DemoConfig:
+    """演示配置"""
+    def __init__(self):
+        self.ckpt_dir = "/home/dell/Project-HCL/BaseLine/flexdm_pt/chechpoints"
+        self.dataset_name = "crello_json"
+        self.db_root = "/home/dell/Project-HCL/BaseLine/flexdm_pt/data/crello_json"
+        self.batch_size = 20
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        # 任务类型: elem, pos, attr, txt, img
+        self.target_task = "pos"
+        
+        # 列名配置
+        self.column_names = {
+            "txt": ["gt-layout", "gt-visual", "input", "pred"],
+            "img": ["gt-layout", "gt-visual", "input", "pred"],
+            "attr": ["gt-layout", "gt-visual", "input", "pred"],
+            "pos": ["gt-layout", "gt-visual", "pred-layout", "pred-visual"],
+            "elem": ["gt-layout", "gt-visual", "input-layout", "input-visual", "pred-layout", "pred-visual"],
+        }
+        
+        # 属性分组
+        self.attribute_groups = {
+            "type": ["type"],
+            "pos": ["left", "top", "width", "height"],
+            "attr": ["opacity", "color", "font_family"],
+            "img": ["image_embedding"],
+            "txt": ["text_embedding"],
+        }
+
+config = DemoConfig()
+print(f"✓ 配置完成")
+print(f"  - 设备: {config.device}")
+print(f"  - 任务: {config.target_task}")
+print(f"  - 批次大小: {config.batch_size}")
+
+
+# ============================================================
+# Cell 3: 类型映射工具
+# ============================================================
+DEFAULT_TYPE_MAPPING = {
+    0: '',
+    1: 'svgElement',
+    2: 'textElement',
+    3: 'imageElement',
+    4: 'coloredBackground',
+    5: 'maskElement',
+    6: 'humanElement',
+}
+
+def load_type_mapping_from_vocab(vocab_file: str) -> Dict[int, str]:
+    """从vocabulary.json加载类型映射"""
+    try:
+        with open(vocab_file, 'r') as f:
+            vocab = json.load(f)
+        
+        type_vocab = vocab.get('type', {})
+        
+        if isinstance(type_vocab, dict):
+            type_list = sorted(type_vocab.keys())
+        elif isinstance(type_vocab, list):
+            type_list = type_vocab
+        else:
+            return DEFAULT_TYPE_MAPPING
+        
+        id_to_name = {0: ''}
+        for i, name in enumerate(type_list):
+            id_to_name[i + 1] = name
+        
+        print("✓ 类型映射:")
+        for idx, name in sorted(id_to_name.items()):
+            if name:
+                print(f"    {idx}: {name}")
+        
+        return id_to_name
+        
+    except Exception as e:
+        print(f"警告: 加载类型映射失败 ({e})，使用默认映射")
+        return DEFAULT_TYPE_MAPPING
+
+
+def load_font_mapping_from_dataset(dataset) -> Dict[int, str]:
+    """从数据集加载字体映射"""
+    if hasattr(dataset, 'idx_to_font'):
+        return dataset.idx_to_font
+    return {}
+
+
+# ============================================================
+# Cell 4: 数据处理工具
+# ============================================================
+def _extract_scalar(tensor):
+    """从张量中提取标量值"""
+    if tensor.dim() == 0:
+        return tensor.item()
+    elif tensor.dim() == 1:
+        if tensor.size(0) == 1:
+            return tensor[0].item()
+        else:
+            return tensor.argmax().item()
+    else:
+        return tensor.argmax(dim=-1)[0].item() if tensor.size(0) > 0 else 0
+
+
+def tensor_to_list(
+    data: Dict,
+    type_mapping: Dict[int, str],
+    font_mapping: Optional[Dict[int, str]] = None
+) -> List[Dict]:
+    """将批次张量转换为样本列表"""
+    batch_size = data['length'].size(0)
+    items = []
+    
+    for i in range(batch_size):
+        canvas_w = data['canvas_width'][i].item() if 'canvas_width' in data else 800
+        canvas_h = data['canvas_height'][i].item() if 'canvas_height' in data else 600
+        
+        item = {
+            'id': data['id'][i] if 'id' in data else f'sample_{i}',
+            'canvas_width': canvas_w,
+            'canvas_height': canvas_h,
+            'length': data['length'][i].item(),
+            'elements': []
+        }
+        
+        num_elements = item['length']
+        
+        for j in range(num_elements):
+            element = {}
+            
+            for key, value in data.items():
+                if key in ['id', 'length', 'canvas_width', 'canvas_height']:
+                    continue
+                
+                if not torch.is_tensor(value):
+                    continue
+                
+                if value.dim() >= 2 and value.size(1) > j:
+                    elem_value = value[i, j]
+                    
+                    if key == 'type':
+                        type_id = _extract_scalar(elem_value)
+                        element[key] = type_mapping.get(int(type_id), '')
+                        continue
+                    
+                    if key == 'font_family' and font_mapping:
+                        font_id = _extract_scalar(elem_value)
+                        element[key] = font_mapping.get(int(font_id), 'Arial')
+                        continue
+                    
+                    if key in ['left', 'width']:
+                        raw_val = _extract_scalar(elem_value)
+                        element[key] = raw_val / canvas_w if raw_val > 1 else raw_val
+                        continue
+                    
+                    if key in ['top', 'height']:
+                        raw_val = _extract_scalar(elem_value)
+                        element[key] = raw_val / canvas_h if raw_val > 1 else raw_val
+                        continue
+                    
+                    if key == 'color':
+                        if elem_value.dim() >= 1 and elem_value.size(-1) >= 3:
+                            element[key] = elem_value[:3].cpu().numpy().tolist()
+                        else:
+                            element[key] = [128, 128, 128]
+                        continue
+                    
+                    if key in ['opacity']:
+                        element[key] = _extract_scalar(elem_value)
+                        continue
+                    
+                    if 'embedding' in key:
+                        element[key] = elem_value.cpu().numpy()
+                        continue
+                    
+                    if key == 'uuid':
+                        element[key] = str(_extract_scalar(elem_value))
+                        continue
+                    
+                    element[key] = _extract_scalar(elem_value)
+            
+            item['elements'].append(element)
+        
+        items.append(item)
+    
+    return items
+
+
+def get_seq_mask(lengths: torch.Tensor, max_len: int = None) -> torch.Tensor:
+    """生成序列掩码"""
+    if lengths.dim() == 2:
+        lengths = lengths.squeeze(-1)
+    
+    if max_len is None:
+        max_len = lengths.max().item()
+    
+    mask = torch.arange(max_len, device=lengths.device).unsqueeze(0) < lengths.unsqueeze(1)
+    return mask
+
+
+def get_initial_masks(input_columns: Dict, seq_mask: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """初始化掩码字典"""
+    masks = {}
+    batch_size, seq_len = seq_mask.shape
+    
+    for key, column in input_columns.items():
+        if column.get('is_sequence', False):
+            masks[key] = torch.zeros_like(seq_mask, dtype=torch.bool)
+        else:
+            masks[key] = torch.ones(batch_size, dtype=torch.bool)
+    
+    return masks
+
+
+def set_visual_default(item: Dict) -> Dict:
+    """设置可视化默认值"""
+    item = item.copy()
+    for elem in item.get('elements', []):
+        if 'color' not in elem or elem['color'] is None:
+            elem['color'] = [128, 128, 128]
+        if 'opacity' not in elem or elem['opacity'] is None:
+            elem['opacity'] = 1.0
+        if 'font_family' not in elem or elem['font_family'] is None:
+            elem['font_family'] = 'Arial'
+    return item
+
+
+# ============================================================
+# Cell 5: 模型相关
+# ============================================================
+def load_model(checkpoint_path: str, input_columns: Dict, device: str = 'cuda'):
+    """加载PyTorch模型"""
+    model = MFP(
+        input_columns=input_columns,
+        embed_dim=256,
+        num_blocks=4,
+        num_heads=8,
+        dropout=0.1,
+    )
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        print(f"  警告: 缺失 {len(missing)} 个键")
+    if unexpected:
+        print(f"  警告: 多余 {len(unexpected)} 个键")
+    
+    model.to(device)
+    model.eval()
+    
+    print(f"✓ 模型加载成功")
+    return model
+
+
+def apply_task_masks(
+    example: Dict,
+    input_columns: Dict,
+    target_task: str,
+    attribute_groups: Dict,
+    device: str
+) -> Dict[str, torch.Tensor]:
+    """应用任务特定的掩码"""
+    seq_mask = get_seq_mask(example['length'], example['left'].size(1))
+    mfp_masks = get_initial_masks(input_columns, seq_mask)
+    
+    for key in mfp_masks.keys():
+        if not input_columns[key].get('is_sequence', False):
+            continue
+        
+        mask = mfp_masks[key].clone()
+        
+        if target_task == "elem":
+            mask[:, 0] = True
+        else:
+            if key == "type":
+                continue
+            
+            if target_task in attribute_groups:
+                attr_keys = attribute_groups[target_task]
+                if key in attr_keys:
+                    mask = seq_mask.clone()
+        
+        mfp_masks[key] = mask.to(device)
+    
+    return mfp_masks
+
+
+def model_inference_with_masks(model, inputs, masks):
+    """使用掩码进行模型推理"""
+    masked_inputs = {}
+    for key, value in inputs.items():
+        if key in masks and torch.is_tensor(value):
+            mask = masks[key]
+            if mask.any():
+                masked_value = value.clone()
+                if value.dim() == 3:
+                    masked_value[mask] = 0
+                masked_inputs[key] = masked_value
+            else:
+                masked_inputs[key] = value
+        else:
+            masked_inputs[key] = value
+    
+    outputs = model(masked_inputs)
+    return outputs
+
+
+# ============================================================
+# Cell 6: 可视化主函数
+# ============================================================
+def visualize_reconstruction(
+    model: torch.nn.Module,
+    example: Dict,
+    builders: Dict,
+    config: DemoConfig,
+    input_columns: Dict,
+    type_mapping: Dict[int, str],
+    font_mapping: Optional[Dict[int, str]] = None,
+):
+    """可视化重建结果"""
+    svgs = []
+    target_task = config.target_task
+    
+    items = tensor_to_list(example, type_mapping, font_mapping)
+    
+    print(f"渲染 {len(items)} 个样本...")
+    
+    # GT Layout
+    print("  - GT Layout")
+    svgs.append([builders["layout"](item) for item in items])
+    
+    # GT Visual
+    print("  - GT Visual")
+    svgs.append([builders["visual"](item) for item in items])
+    
+    # 输入视图
+    if target_task == "txt":
+        print("  - Input (无文本)")
+        svgs.append([builders["visual_wo_text"](item) for item in items])
+    elif target_task == "img":
+        print("  - Input (无图像)")
+        svgs.append([builders["visual_wo_image"](item) for item in items])
+    elif target_task == "attr":
+        print("  - Input (默认属性)")
+        svgs.append([builders["visual"](set_visual_default(item)) for item in items])
+    
+    # 应用掩码
+    mfp_masks = apply_task_masks(
+        example, input_columns, target_task,
+        config.attribute_groups, config.device
+    )
+    
+    # 元素级任务
+    if target_task == "elem":
+        example_copy = {}
+        for key, value in example.items():
+            if isinstance(value, torch.Tensor) and value.dim() >= 2 and value.size(1) > 1:
+                indices = torch.where(~mfp_masks[key][0, :])[0]
+                example_copy[key] = torch.index_select(value, 1, indices)
+            else:
+                example_copy[key] = value
+        
+        example_copy['length'] = example['length'] - 1
+        items_copy = tensor_to_list(example_copy, type_mapping, font_mapping)
+        svgs.append([builders["layout"](item) for item in items_copy])
+        svgs.append([builders["visual"](item) for item in items_copy])
+    
+    # 模型预测
+    print("  - 模型推理")
+    with torch.no_grad():
+        pred = model_inference_with_masks(model, example, mfp_masks)
+    
+    for key in example:
+        if key not in pred:
+            pred[key] = example[key]
+    
+    pred_items = tensor_to_list(pred, type_mapping, font_mapping)
+    
+    if target_task in ["pos", "elem"]:
+        print("  - Pred Layout")
+        svgs.append([builders["layout"](item) for item in pred_items])
+    
+    print("  - Pred Visual")
+    svgs.append([builders["visual"](item) for item in pred_items])
+    
+    print("✓ 渲染完成")
+    
+    return list(zip(*svgs))
+
+
+# ============================================================
+# Cell 7: 加载数据和模型
+# ============================================================
+print("="*80)
+print("MFP PyTorch Demo - Jupyter Notebook版本")
+print("="*80)
+
+# 加载数据集
+print("\n1. 加载数据集")
+dataset = DesignLayoutDataset(
+    config.db_root,
+    split='test',
+    max_length=20
+)
+print(f"✓ 数据集大小: {len(dataset)}")
+
+# 加载类型映射
+print("\n2. 加载类型映射")
+vocab_file = Path(config.db_root).parent / "vocabulary.json"
+type_mapping = load_type_mapping_from_vocab(str(vocab_file))
+
+# 加载字体映射
+font_mapping = load_font_mapping_from_dataset(dataset)
+if font_mapping:
+    print(f"✓ 字体映射: {len(font_mapping)} 个字体")
+
+# 创建DataLoader
+print("\n3. 创建DataLoader")
+from torch.utils.data import DataLoader
+from dataset import collate_fn
+
+dataloader = DataLoader(
+    dataset,
+    batch_size=config.batch_size,
+    shuffle=False,
+    collate_fn=collate_fn
+)
+
+example = next(iter(dataloader))
+
+for key in example:
+    if torch.is_tensor(example[key]):
+        example[key] = example[key].to(config.device)
+
+print(f"✓ 批次形状: {example['left'].shape}")
+
+# 加载模型配置
+print("\n4. 加载模型配置")
+input_columns_file = './input_columns_generated.json'
+with open(input_columns_file, 'r') as f:
+    input_columns = json.load(f)
+print(f"✓ 输入列数: {len(input_columns)}")
+
+# 加载模型
+print("\n5. 加载模型")
+checkpoint_path = Path(config.ckpt_dir) / "best_pytorch.pth"
+model = load_model(str(checkpoint_path), input_columns, config.device)
+
+# 构建检索数据库
+print("\n6. 构建检索数据库")
+db_root = Path(config.db_root).parent / config.dataset_name
+
+image_db = ImageRetriever(db_root, image_path=db_root / "images")
+image_db.build("test")
+
+text_db = TextRetriever(db_root, text_path=db_root / "texts")
+text_db.build("test")
+
+# 创建SVG构建器
+print("\n7. 创建SVG构建器")
+builders = {}
+
+builders["layout"] = SVGBuilder(
+    key='type',
+    max_width=128,
+    max_height=192,
+    opacity=0.8,
+)
+
+patterns = [
+    ("visual", image_db, text_db),
+    ("visual_wo_text", image_db, None),
+    ("visual_wo_image", None, text_db),
+]
+
+for (name, idb, tdb) in patterns:
+    builders[name] = SVGBuilder(
+        key='color',
+        max_width=128,
+        max_height=192,
+        image_db=idb,
+        text_db=tdb,
+        render_text=(tdb is not None),
+        opacity=1.0,
+    )
+
+print("✓ 构建器创建完成")
+
+
+# ============================================================
+# Cell 8: 运行可视化
+# ============================================================
+print("\n" + "="*80)
+print(f"8. 开始可视化 - 任务: {config.target_task}")
+print("="*80)
+
+svgs = visualize_reconstruction(
+    model, example, builders, config, input_columns,
+    type_mapping, font_mapping
+)
+
+print(f"\n✓ 生成了 {len(svgs)} 个样本的可视化结果")
+print(f"列名: {config.column_names[config.target_task]}")
+
+
+# ============================================================
+# Cell 9: 显示结果（按照用户要求的格式）
+# ============================================================
+# print("\n" + "="*80)
+# print("可视化结果:")
+# print("="*80)
+
+# for i, row in enumerate(svgs):
+#     print(f"\nSample {i}:")
+#     display(HTML("<div>%s</div>" % " ".join(itertools.chain.from_iterable(row))))
+
+# print("\n" + "="*80)
+# print("✓ Demo完成!")
+# print("="*80)
+
+
+# ============================================================
+# Cell 10 (可选): 单独显示某个样本
+# ============================================================
+# 如果想单独查看某个样本，运行这个cell
+"""
+sample_idx = 0  # 修改这个索引查看不同样本
+
+print(f"Sample {sample_idx} - 详细视图")
+print(f"列名: {config.column_names[config.target_task]}")
+
+row = svgs[sample_idx]
+for col_idx, col_name in enumerate(config.column_names[config.target_task]):
+    if col_idx < len(row):
+        print(f"\n{col_name}:")
+        display(HTML(f"<div>{row[col_idx]}</div>"))
+"""
+
+
+# ============================================================
+# Cell 11 (可选): 并排对比显示
+# ============================================================
+# 将多个样本并排显示，方便对比
+# """
+def display_comparison(svgs, sample_indices, column_names):
+    '''并排显示多个样本'''
+    html_parts = ['<table style="border-collapse: collapse;">']
+    
+    # 表头
+    html_parts.append('<tr>')
+    html_parts.append('<th>Sample</th>')
+    for col_name in column_names:
+        html_parts.append(f'<th style="padding: 10px;">{col_name}</th>')
+    html_parts.append('</tr>')
+    
+    # 每一行
+    for idx in sample_indices:
+        if idx >= len(svgs):
+            continue
+        
+        html_parts.append('<tr>')
+        html_parts.append(f'<td style="padding: 10px;"><b>#{idx}</b></td>')
+        
+        row = svgs[idx]
+        for item in row:
+            html_parts.append(f'<td style="padding: 10px;">{item}</td>')
+        
+        html_parts.append('</tr>')
+    
+    html_parts.append('</table>')
+    
+    display(HTML(''.join(html_parts)))
+
+# 显示前4个样本
+print("前4个样本对比:")
+display_comparison(svgs, [0, 1, 2, 3], config.column_names[config.target_task])
+# """
+
+ dataset.py
+ """
+PyTorch数据加载器
+用于加载转换后的JSON格式设计数据
+修复了font_family编码问题
+"""
+
+import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+import numpy as np
+from typing import Dict, List, Optional
+
+
+class DesignLayoutDataset(Dataset):
+    """设计布局数据集"""
+    
+    def __init__(
+        self,
+        data_path: str,
+        split: str = 'train',
+        max_length: int = 20,
+        bins: int = 64,
+        min_font_freq: int = 500,  # 字体最小频率阈值
+    ):
+        """
+        Args:
+            data_path: JSON数据文件路径
+            split: 数据集划分 ('train', 'val', 'test')
+            max_length: 最大元素数量
+            bins: 位置离散化的区间数
+            min_font_freq: 字体最小出现频率
+        """
+        self.data_path = Path(data_path)
+        self.split = split
+        self.max_length = max_length
+        self.bins = bins
+        self.min_font_freq = min_font_freq
+        
+        # 加载数据
+        json_file = self.data_path / f"{split}.json"
+        print(f"加载数据: {json_file}")
+        with open(json_file, 'r', encoding='utf-8') as f:
+            self.data = json.load(f)
+        
+        print(f"✓ 加载了 {len(self.data)} 个样本")
+        
+        # 加载词汇表
+        vocab_file = self.data_path.parent / "vocabulary.json"
+        with open(vocab_file, 'r', encoding='utf-8') as f:
+            self.vocabulary = json.load(f)
+        
+        # 构建查找表
+        self._build_lookups()
+    
+    def _build_lookups(self):
+        """构建字符串到索引的映射（修复版）"""
+        print("\n构建查找表...")
+        
+        # === Type映射 ===
+        type_vocab = self.vocabulary['type']
+        if isinstance(type_vocab, list):
+            self.type_to_idx = {v: i+1 for i, v in enumerate(type_vocab)}  # 从1开始
+        else:
+            # 如果是字典格式
+            self.type_to_idx = {k: i+1 for i, k in enumerate(type_vocab.keys())}
+        
+        # 添加特殊token（0保留给padding）
+        type_vocab_size = len(self.type_to_idx)
+        self.type_to_idx['<NULL>'] = 0  # padding
+        self.type_to_idx['<MASK>'] = type_vocab_size + 1
+        
+        print(f"  Type词汇表: {len(self.type_to_idx)} 个类型")
+        
+        # === Font映射（关键修复） ===
+        if 'font_family' in self.vocabulary:
+            font_vocab = self.vocabulary['font_family']
+            
+            if isinstance(font_vocab, dict):
+                # 字典格式：{"font_name": count}
+                total_fonts = len(font_vocab)
+                
+                # 频率过滤
+                filtered_fonts = [
+                    font for font, count in font_vocab.items() 
+                    if count >= self.min_font_freq
+                ]
+                filtered_fonts.sort()  # 排序保证一致性
+                
+                print(f"  Font过滤: {total_fonts} -> {len(filtered_fonts)} (频率>={self.min_font_freq})")
+                
+                # 构建映射（从1开始，0留给padding）
+                self.font_to_idx = {font: i+1 for i, font in enumerate(filtered_fonts)}
+            else:
+                # 列表格式
+                self.font_to_idx = {v: i+1 for i, v in enumerate(font_vocab)}
+                print(f"  Font词汇表: {len(self.font_to_idx)} 个字体")
+            
+            # 添加特殊token
+            vocab_size = len(self.font_to_idx)
+            self.font_to_idx['<NULL>'] = 0           # padding
+            self.font_to_idx['<OOV>'] = vocab_size + 1   # 未知字体
+            self.font_to_idx['<MASK>'] = vocab_size + 2  # 训练时遮蔽
+            
+            self.font_oov_idx = vocab_size + 1
+            self.font_vocab_size = vocab_size + 2  # 不包括padding的0
+            
+            print(f"  Font词汇表: {len(self.font_to_idx)} 个token (含特殊token)")
+            print(f"    - 有效字体: {vocab_size}")
+            print(f"    - OOV索引: {self.font_oov_idx}")
+            print(f"    - MASK索引: {vocab_size + 2}")
+        else:
+            self.font_to_idx = {}
+            self.font_oov_idx = 0
+            self.font_vocab_size = 0
+            print("  未找到font_family字段")
+        
+        # 反向映射（用于调试）
+        self.idx_to_type = {v: k for k, v in self.type_to_idx.items()}
+        self.idx_to_font = {v: k for k, v in self.font_to_idx.items()}
+    
+    def discretize(self, value: float, min_val: float = 0.0, max_val: float = 1.0) -> int:
+        """将连续值离散化到bins"""
+        value = np.clip(value, min_val, max_val)
+        return int((value - min_val) / (max_val - min_val) * (self.bins - 1))
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+        """获取单个样本"""
+        item = self.data[idx]
+        length = min(item['length'], self.max_length)
+        
+        # 准备返回字典
+        sample = {
+            'id': item['id'],
+            'length': torch.tensor([length], dtype=torch.long),
+            'canvas_width': torch.tensor([item['canvas_width']], dtype=torch.long),
+            'canvas_height': torch.tensor([item['canvas_height']], dtype=torch.long),
+        }
+        
+        # 处理序列特征 - 位置和尺寸
+        for key in ['left', 'top', 'width', 'height']:
+            values = [self.discretize(item[key][i]) for i in range(length)]
+            values += [0] * (self.max_length - length)  # padding
+            sample[key] = torch.tensor(values, dtype=torch.long).unsqueeze(-1)
+        
+        # 类型编码
+        type_ids = [self.type_to_idx.get(item['type'][i], 0) for i in range(length)]
+        type_ids += [0] * (self.max_length - length)  # padding用0
+        sample['type'] = torch.tensor(type_ids, dtype=torch.long).unsqueeze(-1)
+        
+        # 不透明度（连续值）
+        if 'opacity' in item:
+            opacity = item['opacity'][:length] + [0.0] * (self.max_length - length)
+            sample['opacity'] = torch.tensor(opacity, dtype=torch.float32).unsqueeze(-1)
+        
+        # 颜色 (RGB)
+        if 'color' in item:
+            colors = []
+            for i in range(length):
+                colors.append(item['color'][i])
+            for _ in range(self.max_length - length):
+                colors.append([0, 0, 0])  # padding
+            sample['color'] = torch.tensor(colors, dtype=torch.long)
+        
+        # 字体编码（修复版）
+        if 'font_family' in item and self.font_to_idx:
+            font_ids = []
+            for i in range(length):
+                font_name = item['font_family'][i]
+                # 使用OOV索引处理未知字体
+                font_id = self.font_to_idx.get(font_name, self.font_oov_idx)
+                font_ids.append(font_id)
+            
+            # Padding用0
+            font_ids += [0] * (self.max_length - length)
+            sample['font_family'] = torch.tensor(font_ids, dtype=torch.long).unsqueeze(-1)
+        
+        # 图像嵌入
+        if 'image_embedding' in item:
+            image_embs = item['image_embedding'][:length]
+            for _ in range(self.max_length - length):
+                image_embs.append([0.0] * 512)
+            sample['image_embedding'] = torch.tensor(image_embs, dtype=torch.float32)
+        
+        # 文本嵌入
+        if 'text_embedding' in item:
+            text_embs = item['text_embedding'][:length]
+            for _ in range(self.max_length - length):
+                text_embs.append([0.0] * 512)
+            sample['text_embedding'] = torch.tensor(text_embs, dtype=torch.float32)
+        
+        return sample
+    
+    def get_input_columns(self) -> Dict:
+        """生成input_columns配置"""
+        input_columns = {
+            'type': {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': len(self.type_to_idx) - 1,  # 不包括<NULL>
+                'shape': [1]
+            },
+            'left': {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': self.bins,
+                'shape': [1]
+            },
+            'top': {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': self.bins,
+                'shape': [1]
+            },
+            'width': {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': self.bins,
+                'shape': [1]
+            },
+            'height': {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': self.bins,
+                'shape': [1]
+            },
+        }
+        
+        # 字体
+        if self.font_to_idx:
+            input_columns['font_family'] = {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': self.font_vocab_size,
+                'shape': [1],
+                'loss_condition': {
+                    'key': 'type',
+                    'values': ['textElement']  # 只对文本元素计算损失
+                }
+            }
+        
+        # 不透明度
+        if any('opacity' in item for item in self.data[:10]):
+            input_columns['opacity'] = {
+                'is_sequence': True,
+                'type': 'categorical',  # 或 'numerical'
+                'input_dim': 8,  # 8个bins
+                'shape': [1]
+            }
+        
+        # 颜色
+        if any('color' in item for item in self.data[:10]):
+            input_columns['color'] = {
+                'is_sequence': True,
+                'type': 'categorical',
+                'input_dim': 16,  # 16个bins (per channel)
+                'shape': [3]  # RGB
+            }
+        
+        # 嵌入
+        if any('image_embedding' in item for item in self.data[:10]):
+            input_columns['image_embedding'] = {
+                'is_sequence': True,
+                'type': 'numerical',
+                'shape': [512]
+            }
+        
+        if any('text_embedding' in item for item in self.data[:10]):
+            input_columns['text_embedding'] = {
+                'is_sequence': True,
+                'type': 'numerical',
+                'shape': [512]
+            }
+        
+        return input_columns
+
+
+def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    """批处理函数"""
+    keys = batch[0].keys()
+    collated = {}
+    
+    for key in keys:
+        if key == 'id':
+            collated[key] = [item[key] for item in batch]
+        else:
+            collated[key] = torch.stack([item[key] for item in batch])
+    
+    return collated
+
+
+def create_dataloader(
+    data_path: str,
+    split: str = 'train',
+    batch_size: int = 32,
+    shuffle: bool = True,
+    num_workers: int = 4,
+    **dataset_kwargs
+) -> DataLoader:
+    """创建数据加载器"""
+    dataset = DesignLayoutDataset(data_path, split=split, **dataset_kwargs)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=True,
+    )
+    
+    return dataloader
+
+
+# ==================== 测试和验证代码 ====================
+
+def validate_font_encoding(dataset: DesignLayoutDataset, num_samples: int = 5):
+    """验证字体编码正确性"""
+    print("\n" + "="*60)
+    print("字体编码验证")
+    print("="*60)
+    
+    print(f"\n1. 词汇表统计:")
+    print(f"   总token数: {len(dataset.font_to_idx)}")
+    print(f"   有效字体数: {dataset.font_vocab_size - 2}")
+    print(f"   OOV索引: {dataset.font_oov_idx}")
+    
+    print(f"\n2. 前10个字体:")
+    for i, (font, idx) in enumerate(list(dataset.font_to_idx.items())[:10]):
+        print(f"   {idx:3d}: {font}")
+    
+    print(f"\n3. 特殊token:")
+    for token in ['<NULL>', '<OOV>', '<MASK>']:
+        if token in dataset.font_to_idx:
+            print(f"   {token:8s}: {dataset.font_to_idx[token]}")
+    
+    print(f"\n4. 样本验证:")
+    for i in range(min(num_samples, len(dataset))):
+        sample = dataset[i]
+        if 'font_family' in sample:
+            font_ids = sample['font_family'].squeeze().tolist()
+            length = sample['length'].item()
+            
+            print(f"\n   样本 {i}:")
+            print(f"   长度: {length}")
+            print(f"   字体ID (前5个): {font_ids[:5]}")
+            
+            # 解码回字体名
+            fonts_decoded = []
+            for fid in font_ids[:length]:
+                font_name = dataset.idx_to_font.get(fid, '<UNKNOWN>')
+                fonts_decoded.append(font_name)
+            print(f"   字体名 (前3个): {fonts_decoded[:3]}")
+    
+    print("\n" + "="*60)
+
+
+if __name__ == "__main__":
+    # 测试数据加载
+    data_path = "/home/dell/Project-HCL/BaseLine/flex-dm/data/crello_json"
+    
+    print("="*60)
+    print("数据集测试")
+    print("="*60)
+    
+    # 创建训练集
+    train_dataset = DesignLayoutDataset(
+        data_path=data_path,
+        split='train',
+        max_length=20,
+        min_font_freq=500,
+    )
+    
+    # 验证字体编码
+    validate_font_encoding(train_dataset)
+    
+    # 创建DataLoader
+    train_loader = create_dataloader(
+        data_path=data_path,
+        split='train',
+        batch_size=16,
+        shuffle=True,
+    )
+    
+    print(f"\n训练集批次数: {len(train_loader)}")
+    
+    # 测试一个批次
+    batch = next(iter(train_loader))
+    print("\n样本批次:")
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            print(f"  {key:20s}: shape={list(value.shape)}, dtype={value.dtype}")
+        else:
+            print(f"  {key:20s}: {type(value)}")
+    
+    # 显示第一个样本
+    print(f"\n第一个样本:")
+    print(f"  ID: {batch['id'][0]}")
+    print(f"  长度: {batch['length'][0].item()}")
+    print(f"  画布: {batch['canvas_width'][0].item()} x {batch['canvas_height'][0].item()}")
+    
+    if 'font_family' in batch:
+        print(f"  字体ID: {batch['font_family'][0, :5].squeeze().tolist()}")
+    
+    # 生成input_columns配置
+    input_columns = train_dataset.get_input_columns()
+    print(f"\n生成的input_columns:")
+    for key, config in input_columns.items():
+        print(f"  {key:20s}: {config}")
+    
+    # 保存配置
+    import json
+    output_file = "input_columns_generated.json"
+    with open(output_file, 'w') as f:
+        json.dump(input_columns, f, indent=2)
+    print(f"\n✓ 配置已保存到: {output_file}")
+
+修改dataset.py和demo.ipynb使用使用上述同样的discretize（Lookup）方法对canvas_width 和 canvas_height

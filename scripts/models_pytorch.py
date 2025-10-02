@@ -240,6 +240,10 @@ class Encoder(nn.Module):
         for idx, key in enumerate(self.emb_keys):
             if key not in inputs:
                 continue
+
+            if key=='uuid':
+                print("跳过 uuid 特征")
+                continue
             
             x = inputs[key]
             layer = self.emb_layers[idx]
@@ -317,6 +321,8 @@ class Decoder(nn.Module):
         batch_size, seq_len, _ = x.shape
         
         for idx, key in enumerate(self.head_keys):
+            if key=='uuid':
+                continue
             column = self.head_configs[idx]
             pred = self.head_layers[idx](x)
             

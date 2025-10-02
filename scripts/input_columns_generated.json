@@ -1,102 +1,196 @@
 {
-  "canvas_width": {
+  "id": {
+    "demo_only": true,
+    "shape": [
+      1
+    ],
     "is_sequence": false,
-    "type": "categorical",
-    "input_dim": 2000
-  },
-  "canvas_height": {
-    "is_sequence": false,
-    "type": "categorical",
-    "input_dim": 2000
+    "primary_label": null
   },
   "length": {
+    "type": "categorical",
+    "input_dim": 50,
+    "shape": [
+      1
+    ],
     "is_sequence": false,
-    "type": "categorical",
-    "input_dim": 2000
+    "primary_label": null
   },
-  "color": {
-    "is_sequence": true,
-    "type": "numerical",
-    "shape": [
-      3
-    ]
-  },
-  "font_family": {
-    "is_sequence": true,
+  "group": {
     "type": "categorical",
-    "input_dim": 81,
+    "input_dim": 7,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": false,
+    "primary_label": null
   },
-  "height": {
-    "is_sequence": true,
+  "format": {
     "type": "categorical",
-    "input_dim": 64,
+    "input_dim": 68,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": false,
+    "primary_label": null
   },
-  "image_embedding": {
-    "is_sequence": true,
-    "type": "numerical",
-    "shape": [
-      512
-    ]
-  },
-  "left": {
-    "is_sequence": true,
+  "canvas_width": {
     "type": "categorical",
-    "input_dim": 64,
+    "input_dim": 41,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": false,
+    "primary_label": null
   },
-  "opacity": {
-    "is_sequence": true,
+  "canvas_height": {
     "type": "categorical",
-    "input_dim": 64,
+    "input_dim": 46,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": false,
+    "primary_label": null
   },
-  "text_embedding": {
-    "is_sequence": true,
-    "type": "numerical",
-    "shape": [
-      512
-    ]
-  },
-  "top": {
-    "is_sequence": true,
+  "category": {
     "type": "categorical",
-    "input_dim": 64,
+    "input_dim": 24,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": false,
+    "primary_label": null
   },
   "type": {
-    "is_sequence": true,
     "type": "categorical",
-    "input_dim": 15,
+    "input_dim": 6,
     "shape": [
       1
-    ]
-  },
-  "uuid": {
+    ],
     "is_sequence": true,
-    "type": "categorical",
-    "input_dim": 1215,
-    "shape": [
-      1
-    ]
+    "primary_label": 0
   },
-  "width": {
-    "is_sequence": true,
+  "left": {
     "type": "categorical",
     "input_dim": 64,
     "shape": [
       1
-    ]
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "top": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "width": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "height": {
+    "type": "categorical",
+    "input_dim": 64,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "opacity": {
+    "type": "categorical",
+    "input_dim": 8,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null
+  },
+  "color": {
+    "type": "categorical",
+    "input_dim": 16,
+    "shape": [
+      3
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  },
+  "image_embedding": {
+    "type": "numerical",
+    "shape": [
+      512
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        true,
+        false,
+        true,
+        false,
+        true
+      ]
+    }
+  },
+  "text_embedding": {
+    "type": "numerical",
+    "shape": [
+      512
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+      ]
+    }
+  },
+  "font_family": {
+    "type": "categorical",
+    "input_dim": 35,
+    "shape": [
+      1
+    ],
+    "is_sequence": true,
+    "primary_label": null,
+    "loss_condition": {
+      "key": "type",
+      "mask": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+      ]
+    }
   }
 }

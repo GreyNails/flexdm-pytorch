@@ -1,0 +1,61 @@
+self.emb_keys
+['color', 'font_family', 'height', 'image_embedding', 'left', 'opacity', 'text_embedding', 'top', 'type', 'uuid', 'width']
+special variables
+function variables
+00 =
+'color'
+01 =
+'font_family'
+02 =
+'height'
+03 =
+'image_embedding'
+04 =
+'left'
+05 =
+'opacity'
+06 =
+'text_embedding'
+07 =
+'top'
+08 =
+'type'
+09 =
+'uuid'
+10 =
+'width'
+len() =
+11
+
+
+
+self.input_layer
+DictWrapper({'type': <keras.layers.core.embedding.Embedding object at 0x7f76e0198ed0>, 'left': <keras.layers.core.embedding.Embedding object at 0x7f76e01989d0>, 'top': <keras.layers.core.embedding.Embedding object at 0x7f76e0198cd0>, 'width': <keras.layers.core.embedding.Embedding object at 0x7f76e0198750>, 'height': <keras.layers.core.embedding.Embedding object at 0x7f76e0198290>, 'opacity': <keras.layers.core.embedding.Embedding object at 0x7f76e010a810>, 'color': <keras.layers.core.embedding.Embedding object at 0x7f76e010a310>, 'image_embedding_special': <keras.layers.core.embedding.Embedding object at 0x7f76e010ac90>, 'image_embedding': <keras.layers.core.dense.Dense object at 0x7f76e0177c10>, 'text_embedding_special': <keras.layers.core.embedding.Embedding object at 0x7f76e010aa50>, 'text_embedding': <keras.layers.core.dense.Dense object at 0x7f76e00e8610>, 'font_family': <keras.layers.core.embedding.Embedding object at 0x7f76e00e8b90>})
+special variables
+function variables
+'type' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e0198ed0>
+'left' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e01989d0>
+'top' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e0198cd0>
+'width' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e0198750>
+'height' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e0198290>
+'opacity' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e010a810>
+'color' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e010a310>
+'image_embedding_special' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e010ac90>
+'image_embedding' =
+<keras.layers.core.dense.Dense object at 0x7f76e0177c10>
+'text_embedding_special' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e010aa50>
+'text_embedding' =
+<keras.layers.core.dense.Dense object at 0x7f76e00e8610>
+'font_family' =
+<keras.layers.core.embedding.Embedding object at 0x7f76e00e8b90>
+len() =
+12

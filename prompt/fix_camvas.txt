@@ -1040,4 +1040,4 @@ if __name__ == "__main__":
         json.dump(input_columns, f, indent=2)
     print(f"\n✓ 配置已保存到: {output_file}")
 
-修改dataset.py和demo.ipynb使用使用上述同样的discretize（Lookup）方法对canvas_width 和 canvas_height
+修改dataset.py和demo.ipynb使用使用上述同样的discretize（Lookup）方法对canvas_width 和 canvas_height,给出修改后的代码

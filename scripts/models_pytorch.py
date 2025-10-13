@@ -331,8 +331,8 @@ class MFP(nn.Module):
         print("="*60 + "\n")
     
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        x, mask = self.encoder(inputs)
-        x = self.transformer(x, mask)
+        x, mask = self.encoder(inputs) #torch.Size([20, 20, 256])
+        x = self.transformer(x, mask) #torch.Size([20, 20, 256])
         outputs = self.decoder(x)
         return outputs
     

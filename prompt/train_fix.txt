@@ -1,0 +1,5398 @@
+===== args.py =====
+import argparse
+
+DATASET_NAMES = ["rico", "crello",'dataforfd']
+
+
+class BaseArgs:
+    def __init__(self):
+        self.parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        )
+        self.parser.add_argument(
+            "--dataset_name",
+            required=True,
+            choices=DATASET_NAMES,
+            help="Name of the dataset.",
+        )
+        self.parser.add_argument(
+            "--data_dir",
+            # required=True,
+            help="The GCS or local path of the data location.",
+        )
+        self.parser.add_argument(
+            "--weights",
+            default=None,
+            type=str,
+            help="Path to the initial model weight.",
+        )
+        self.parser.add_argument(
+            "--latent_dim",
+            default=256,
+            type=int,
+            help="Latent dimension.",
+        )
+        self.parser.add_argument(
+            "--num_blocks",
+            default=4,
+            type=int,
+            help="Number of stacked blocks in sequence encoder.",
+        )
+        self.parser.add_argument(
+            "--arch_type",
+            default="oneshot",
+            help="Overall model type",
+        )
+        self.parser.add_argument(
+            "--block_type",
+            default="deepsvg",
+            help="Stacked block type.",
+        )
+        self.parser.add_argument(
+            "--l2",
+            default=1e-2,
+            type=float,
+            help="Scalar coefficient for L2 regularization.",
+        )
+        self.parser.add_argument(
+            "--dropout",
+            default=0.1,
+            type=float,
+            help="Scalar ratio for dropout in transformer",
+        )
+        self.parser.add_argument(
+            "--masking_method",
+            type=str,
+            default="random",
+        )
+        self.parser.add_argument(
+            "--seq_type",
+            type=str,
+            default="default",
+            choices=["default", "flat", "concat_enc"],
+            help="transformer's input is: element-wise feature (default), field-wise feature (flat)",
+        )
+        self.parser.add_argument("--log_level", default="INFO", type=str)
+        self.parser.add_argument("--verbose", default=2, type=int)
+        self.parser.add_argument("--seed", default=0, type=int)
+        self.parser.add_argument("--mult", default=1.0, type=float)
+        self.parser.add_argument(
+            "--context",
+            default=None,
+        )
+        self.parser.add_argument(
+            "--input_dtype",
+            type=str,
+            default="set",
+            choices=["set", "shuffled_set"],
+        )
+        self.parser.add_argument("--batch_size", default=256, type=int)
+
+    def parse_args(self):
+        return self.parser.parse_args()
+
+
+class TrainArgs(BaseArgs):
+    def __init__(self):
+        super().__init__()
+        self.parser.add_argument(
+            "--job-dir",
+            required=True,
+            help="The GCS or local path of logs and saved models.",
+        )
+        self.parser.add_argument(
+            "--num_epochs",
+            default=500,
+            type=int,
+            help="Number of epochs to train.",
+        )
+        self.parser.add_argument(
+            "--learning_rate",
+            default=1e-4,
+            type=float,
+            help="Base learning rate.",
+        )
+        self.parser.add_argument(
+            "--enable_profile",
+            dest="enable_profile",
+            action="store_true",
+            help="Enable profiling for tensorboard. (See tensorflow/tensorboard#3149)",
+        )
+        self.parser.add_argument(
+            "--validation_freq",
+            default=5,
+            type=int,
+            help="Validation frequency in terms of epochs.",
+        )
+
+    def __call__(self):
+        return self.parser.parse_args()
+
+
+===== main.py =====
+import logging
+
+from mfp.args import TrainArgs
+
+logger = logging.getLogger(__name__)
+
+
+def main():
+    args = TrainArgs().parse_args()
+    logging.basicConfig(level=getattr(logging, args.log_level.upper()))
+    logger.info(args)
+
+    from mfp.train import train
+
+    train(args)
+
+
+if __name__ == "__main__":
+    main()
+
+
+===== crello-spec.yml =====
+name: crello
+columns:
+  id:
+    dtype: string
+    demo_only: true
+  length:
+    dtype: int64
+    lookup:
+      vocabulary:
+        min: 1
+        max: 50
+      num_oov_indices: 0
+      mask_value: null
+  group:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  format:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  canvas_width:
+    dtype: int64
+    lookup:
+      num_oov_indices: 0
+  canvas_height:
+    dtype: int64
+    lookup:
+      num_oov_indices: 0
+  category:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  type:
+    is_sequence: true
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+    primary_label:
+      default: ''
+  left:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  top:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  width:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  height:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  opacity:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 8
+  color:
+    is_sequence: true
+    shape: [3]
+    dtype: int64
+    discretize:
+      min: 0
+      max: 255
+      bins: 16
+    loss_condition:
+      key: type
+      values:
+        - textElement
+        - coloredBackground
+  image_embedding:
+    is_sequence: true
+    shape: [512]
+    dtype: float32
+    loss_condition:
+      key: type
+      values:
+        - svgElement
+        - imageElement
+        - maskElement
+  text_embedding:
+    is_sequence: true
+    shape: [512]
+    dtype: float32
+    loss_condition:
+      key: type
+      values:
+        - textElement
+  font_family:
+    is_sequence: true
+    dtype: string
+    min_freq: 500
+    lookup:
+      num_oov_indices: 1
+      mask_token: null
+    loss_condition:
+      key: type
+      values:
+        - textElement
+  uuid:
+    is_sequence: true
+    dtype: string
+    demo_only: true
+
+
+===== layoutvae.py =====
+from typing import Dict
+
+import tensorflow as tf
+import tensorflow_probability as tfp
+from mfp.data.spec import get_valid_input_columns
+from mfp.models.architecture.cvae import MACVAEDecoder, MACVAEEncoder, MAPrior
+from mfp.models.architecture.decoder import Decoder
+from mfp.models.architecture.encoder import Encoder
+from mfp.models.architecture.transformer import Blocks
+
+MND = tfp.distributions.MultivariateNormalDiag
+
+
+class LayoutVAE(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        input_dtype: str = "set",
+        kl: float = 1e-0,
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__()
+        l2 = kwargs.get("l2", None)
+        self.kl = kl  # kl search range: [1e0, 1e1, 1e2]
+        self.arch_type = "autoreg"
+        self.input_columns = input_columns
+        self.valid_input_columns = get_valid_input_columns(input_columns, False)
+        self.lookahead = False
+        self.encoder = Encoder(input_columns, **kwargs)
+        self.decoder = Decoder(input_columns, detachment="none", **kwargs)
+
+        # separately encode each attribute
+        self.encoder_gt = Encoder(input_columns, fusion="none", **kwargs)
+        self.encoder_cvae = MACVAEEncoder(self.valid_input_columns, l2=l2)
+        self.decoder_cvae = MACVAEDecoder(self.valid_input_columns, l2=l2)
+        self.prior = MAPrior(self.valid_input_columns, l2=l2)
+
+        self.blocks = Blocks(
+            num_blocks=num_blocks,
+            block_type=block_type,
+            **kwargs,
+        )
+
+    def call(
+        self,
+        inputs: Dict,
+        targets: Dict,
+        mfp_masks: Dict,
+        training: bool,
+        add_masked_input: bool = True,
+    ):
+        S = tf.shape(inputs["left"])[1]
+        h_inputs, mask = self.encoder(inputs, training=training)
+        if training:
+            h_targets, _ = self.encoder(targets, training=training)
+
+        stack = {k: None for k in self.valid_input_columns}
+        buffer = {}
+
+        h_pred = None  # should be the result of Encoder(x)
+        for i in range(S):
+            if i == 0:
+                h_fused = h_inputs
+            else:
+                # use GT in 0~i-1 th, use masked inputs in i~S-1 th in training
+                h_fused = h_targets[:, 0:i] if training else h_pred[:, 0:i]
+                h_fused = tf.concat([h_fused, h_inputs[:, i:]], axis=1)
+
+            c = self.blocks(h_fused, mask, training=training)[:, i : i + 1]
+            if training:
+                h, _ = self.encoder_gt(targets, training=training)
+                h = {k: v[:, i : i + 1] for (k, v) in h.items()}
+                zs = self.encoder_cvae(h, c, training=training)
+                zs_p = self.prior(c, training=training)
+            else:
+                zs = self.prior(c, training=training)
+            z = {k: v["z"] for (k, v) in zs.items()}
+
+            for (k, v) in self.decoder_cvae(z, c, training=training).items():
+                if i == 0:
+                    stack[k] = v
+                    if training:
+                        for name in ["mean", "log_sigma"]:
+                            buffer[f"{k}_{name}"] = zs[k][f"z_{name}"]
+                            buffer[f"{k}_{name}_p"] = zs_p[k][f"z_{name}"]
+                else:
+                    stack[k] = tf.concat([stack[k], v], axis=1)
+                    if training:
+                        for name in ["mean", "log_sigma"]:
+                            buffer[f"{k}_{name}"] = tf.concat(
+                                [buffer[f"{k}_{name}"], zs[k][f"z_{name}"]],
+                                axis=1,
+                            )
+                            buffer[f"{k}_{name}_p"] = tf.concat(
+                                [buffer[f"{k}_{name}_p"], zs_p[k][f"z_{name}"]],
+                                axis=1,
+                            )
+
+            if not training:
+                elem = self._compute_next(i, stack, mask, inputs, mfp_masks)
+                h_pred = (
+                    tf.concat([h_pred, elem], axis=1) if tf.is_tensor(h_pred) else elem
+                )
+
+        if training:
+            self._compute_kl(buffer, mfp_masks)
+
+        outputs = self.decoder(stack, training=training)
+        return outputs
+
+    def _compute_kl(self, x: Dict[str, tf.Tensor], mfp_masks: Dict[str, tf.Tensor]):
+        loss_total = 0.0
+        for k in self.valid_input_columns:
+            dist = MND(x[f"{k}_mean"], tf.exp(0.5 * x[f"{k}_log_sigma"]))
+            dist_p = MND(x[f"{k}_mean_p"], tf.exp(0.5 * x[f"{k}_log_sigma_p"]))
+            loss = dist.kl_divergence(dist_p)
+            weight = tf.cast(mfp_masks[k], tf.float32)
+            loss = loss * self.kl * weight
+            loss = tf.reduce_mean(loss)
+            self.add_metric(loss, name=k + "_loss")
+            loss_total += loss
+
+        self.add_metric(loss_total, name="kl_loss_total")
+        self.add_loss(loss_total)
+
+    def _compute_next(
+        self,
+        i: int,
+        h: Dict[str, tf.Tensor],
+        mask: tf.Tensor,
+        inputs: Dict[str, tf.Tensor],
+        mfp_masks: Dict[str, tf.Tensor],
+    ) -> tf.Tensor:
+        B = tf.shape(mask)[0]
+        h_i = {}
+        for (k, v) in h.items():
+            h_i[k] = v[:, i : i + 1]
+        outputs_i = self.decoder(h_i, training=False)
+
+        new_inputs = {}
+        for key, column in self.input_columns.items():
+            if column["is_sequence"] and not column.get("demo_only", False):
+                if column["type"] == "categorical":
+                    outputs_i[key] = tf.argmax(
+                        outputs_i[key], axis=-1, output_type=tf.int32
+                    )
+                new_inputs[key] = tf.where(
+                    mfp_masks[key][:, i : i + 1, tf.newaxis],
+                    outputs_i[key],
+                    inputs[key][:, i : i + 1],
+                )
+        new_inputs["length"] = tf.zeros((B, 1))
+        next_elem, _ = self.encoder(new_inputs)  # (B, 1, D)
+        return next_elem
+
+
+===== crello-texts-spec.yml =====
+name: crello-texts
+columns:
+  text_hash:
+    is_sequence: true
+    dtype: string
+  text_embedding:
+    is_sequence: true
+    shape: [512]
+    dtype: float32
+
+
+===== model.py =====
+from typing import Dict, Union
+
+import tensorflow as tf
+from mfp.models.architecture.decoder import Decoder
+from mfp.models.architecture.encoder import Encoder
+from mfp.models.architecture.transformer import Blocks, CrossBlocks
+
+# tf.config.set_visible_devices(tf.config.list_physical_devices('GPU')[1], 'GPU')
+class _OneShot(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__()
+        self.arch_type = "oneshot"
+        self.encoder, self.decoder = None, None
+        self.blocks = Blocks(
+            num_blocks=num_blocks,
+            block_type=block_type,
+            **kwargs,
+        )
+
+    def call(self, inputs, training):
+        h, mask = self.encoder(inputs, training=training)
+        h = self.blocks(h, mask, training=training)
+        outputs = self.decoder(h, training=training)
+        return outputs
+
+
+class Model(_OneShot):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        use_elemwise_noise: bool = False,
+        **kwargs,
+    ):
+        super().__init__(input_columns, num_blocks, block_type, **kwargs)
+        self.encoder = Encoder(
+            input_columns,
+            context=context,
+            input_dtype=input_dtype,
+            use_elemwise_noise=use_elemwise_noise,
+            **kwargs,
+        )
+        self.decoder = Decoder(input_columns, context=context, **kwargs)
+
+
+class VanillaTransformer(_OneShot):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        use_elemwise_noise: bool = False,
+        **kwargs,
+    ):
+        super().__init__(input_columns, num_blocks, block_type, **kwargs)
+        assert input_dtype == "shuffled_set"
+        self.encoder = Encoder(
+            input_columns, fusion="flat", input_dtype=input_dtype, **kwargs
+        )
+        self.decoder = Decoder(input_columns, detachment="flat", **kwargs)
+
+
+class _AutoReg(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__()
+        self.add_masked_input = False
+        # self.add_masked_input = True
+
+        self.lookahead = False
+        self.latent_dim = kwargs["latent_dim"]
+        dim = self.latent_dim // 2 if self.add_masked_input else self.latent_dim
+        self.input_columns = get_valid_input_columns(input_columns)
+
+        self.encoder = Encoder(input_columns, input_dtype=input_dtype, **kwargs)
+        self.decoder = Decoder(input_columns, **kwargs)
+
+        initializer = tf.random_normal_initializer()
+        self.bos = tf.Variable(
+            initial_value=initializer(shape=(1, 1, dim), dtype=tf.float32),
+            trainable=True,
+        )
+        if self.add_masked_input:
+            self.dimred = tf.keras.layers.Dense(
+                units=dim,
+                name="dimred",
+                **make_dense_options(kwargs.get("l2", None)),
+            )
+
+    def _compute_next(self, h, mask, inputs, mfp_masks):
+        # Transform sequence and get the last element.
+        if isinstance(mask, tuple):
+            # (tgt_mask, memory_mask)
+            B = tf.shape(mask[0])[0]
+            S = tf.shape(mask[0])[1]
+        else:
+            B = tf.shape(mask)[0]
+            S = tf.shape(mask)[1]
+
+        h = self.blocks(h, mask, training=False)
+        h_t = h[:, S - 1 : S]
+
+        # Get output (=next input) at step t.
+        outputs_t = self.decoder(h_t, training=False)
+        new_inputs = {}
+
+        for key, column in self.input_columns.items():
+            if column["is_sequence"]:
+                if column["type"] == "categorical":
+                    outputs_t[key] = tf.argmax(
+                        outputs_t[key], axis=-1, output_type=tf.int32
+                    )
+                new_inputs[key] = tf.where(
+                    mfp_masks[key][:, S - 1 : S, tf.newaxis],
+                    outputs_t[key],
+                    inputs[key][:, S - 1 : S],
+                )
+
+        new_inputs["length"] = tf.zeros((B, 1))
+        next_elem, _ = self.encoder(new_inputs)
+
+        tf.debugging.assert_rank(next_elem, 3)
+        return next_elem
+
+
+class AutoReg(_AutoReg):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__(
+            input_columns=input_columns,
+            num_blocks=num_blocks,
+            block_type=block_type,
+            context=context,
+            input_dtype=input_dtype,
+            **kwargs,
+        )
+        self.blocks = Blocks(
+            num_blocks=num_blocks,
+            block_type=block_type,
+            lookahead=False,
+            **kwargs,
+        )
+
+    def call(self, inputs, targets, mfp_masks, training):
+        """
+        If add_masked_input, each point in a sequence will be concat. of
+        [previous_emb, current_emb(masked)] instead of previous_emb
+        """
+        if training:
+            h_masked, mask = self.encoder(inputs, training=training)
+            h_tgt, _ = self.encoder(targets, training=training)
+            B = tf.shape(h_masked)[0]
+
+            if self.add_masked_input:
+                h_masked = self.dimred(h_masked)
+                h_tgt = self.dimred(h_tgt)
+
+            # Prepend the beginning-of-seq embedding, and drop the last.
+            bos = tf.tile(self.bos, (B, 1, 1))
+            h = tf.concat([bos, h_tgt[:, 0:-1, :]], axis=1)
+            if self.add_masked_input:
+                h = tf.concat([h, h_masked], axis=-1)  # (B, 1, 2*D)
+
+            h = self.blocks(h, mask, training=training)
+            outputs = self.decoder(h, training=training)
+        else:
+            h_masked, mask = self.encoder(inputs, training=training)
+
+            B = tf.shape(mask)[0]
+            S = tf.shape(mask)[1]
+            h = tf.tile(self.bos, (B, 1, 1))
+
+            if self.add_masked_input:
+                h_masked = self.dimred(h_masked)
+                h = tf.concat([h, h_masked[:, 0:1]], axis=-1)  # (B, 1, 2*D)
+
+            for t in range(S - 1):
+                tf.autograph.experimental.set_loop_options(
+                    shape_invariants=[
+                        (h, tf.TensorShape([None, None, self.latent_dim])),
+                    ]
+                )
+
+                next_elem = self._compute_next(h, mask[:, : t + 1], inputs, mfp_masks)
+                if self.add_masked_input:
+                    next_elem = tf.concat(
+                        [self.dimred(next_elem), h_masked[:, t + 1 : t + 2]],
+                        axis=-1,
+                    )  # (B, 1, 2*D)
+                h = tf.concat([h, next_elem], axis=1)  # (B, (t+1)+1, ?)
+
+            # [<BOS>, T_{1}, ..., T_{t-1}] -> [T_{1}, ..., T_{t}]
+            h = self.blocks(h, mask, training=training)
+            outputs = self.decoder(h, training=training)
+        return outputs
+
+
+# class OneShotAutoReg(_AutoReg):
+#     def __init__(
+#         self,
+#         input_columns: Dict,
+#         num_blocks: int = 4,
+#         block_type: str = "deepsvg",
+#         context: Union[str, None] = None,
+#         input_dtype: str = "set",
+#         **kwargs,  # keys are latent_dim, dropout, l2
+#     ):
+#         super().__init__(
+#             input_columns=input_columns,
+#             num_blocks=num_blocks,
+#             block_type=block_type,
+#             context=context,
+#             input_dtype=input_dtype,
+#             **kwargs,
+#         )
+#         self.enc_blocks = Blocks(
+#             num_blocks=num_blocks // 2,
+#             block_type=block_type,
+#             lookahead=True,
+#             **kwargs,
+#         )
+#         self.blocks = Blocks(
+#             num_blocks=num_blocks // 2,
+#             block_type=block_type,
+#             lookahead=False,
+#             conditional=True,
+#             **kwargs,
+#         )
+#         initializer = tf.random_normal_initializer()
+#         self.cls = tf.Variable(
+#             initial_value=initializer(
+#                 shape=(1, 1, kwargs["latent_dim"]), dtype=tf.float32
+#             ),
+#             trainable=True,
+#         )
+
+#     def call(self, inputs, targets, mfp_masks, training):
+#         training = False
+#         if training:
+#             h_masked, mask = self.encoder(inputs, training=training)
+#             h_tgt, _ = self.encoder(targets, training=training)
+#             B, S, _ = tf.shape(h_masked)
+
+#             # add [CLS] token
+#             new_mask = get_seq_mask(inputs["length"] + 1)
+#             new_h_masked = tf.concat(
+#                 [tf.tile(self.cls, (B, 1, 1)), h_masked], axis=1
+#             )
+
+#             z = self.enc_blocks(new_h_masked, new_mask, training=training)[:, 0]
+#             if self.add_masked_input:
+#                 h_masked = self.dimred(h_masked)
+#                 h_tgt = self.dimred(h_tgt)
+
+#             # Prepend the beginning-of-seq embedding, and drop the last.
+#             bos = tf.tile(self.bos, (B, 1, 1))
+#             h = tf.concat([bos, h_tgt[:, 1:, :]], axis=1)
+#             if self.add_masked_input:
+#                 h = tf.concat([h, h_masked], axis=-1)  # (B, 1, 2*D)
+
+#             h = self.blocks((h, z), mask, training=training)
+#             outputs = self.decoder(h, training=training)
+#         else:
+#             # add [CLS] token
+#             h_masked, mask = self.encoder(inputs, training=training)
+#             B = tf.shape(h_masked)[0]
+#             new_mask = get_seq_mask(inputs["length"] + 1)
+#             new_h_masked = tf.concat(
+#                 [tf.tile(self.cls, (B, 1, 1)), h_masked], axis=1
+#             )
+
+#             z = self.enc_blocks(new_h_masked, new_mask, training=training)[:, 0]
+
+#             # make sure to ignore first element (only for z)
+
+#             bos = tf.tile(self.bos, (B, 1, 1))
+#             if self.add_masked_input:
+#                 h_masked = self.dimred(h_masked)
+#                 h = tf.concat([bos, h_masked[:, 0:1]], axis=-1)  # (B, 1, 2*D)
+#             else:
+#                 h = bos
+
+#             S = tf.shape(mask)[1]
+#             for t in range(S - 1):
+#                 tf.autograph.experimental.set_loop_options(
+#                     shape_invariants=[
+#                         (h, tf.TensorShape([None, None, self.latent_dim])),
+#                     ]
+#                 )
+#                 next_elem = self._compute_next(
+#                     (h, z), mask[:, : t + 1], inputs, mfp_masks
+#                 )
+#                 if self.add_masked_input:
+#                     next_elem = tf.concat(
+#                         [self.dimred(next_elem), h_masked[:, t + 1 : t + 2]],
+#                         axis=-1,
+#                     )  # (B, 1, 2*D)
+#                 h = tf.concat([h, next_elem], axis=1)  # (B, (t+1)+1, 2*D)
+
+#             # [<BOS>, T_{1}, ..., T_{t-1}] -> [T_{1}, ..., T_{t}]
+#             h = self.blocks((h, z), mask, training=training)
+#             outputs = self.decoder(h, training=training)
+
+#         return outputs
+
+
+class BART(_AutoReg):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        assert input_dtype == "shuffled_set"
+        super().__init__(
+            input_columns=input_columns,
+            num_blocks=num_blocks,
+            block_type=block_type,
+            context=context,
+            input_dtype=input_dtype,
+            **kwargs,
+        )
+        self.enc_blocks = Blocks(
+            num_blocks=num_blocks // 2,
+            block_type=block_type,
+            lookahead=True,
+            **kwargs,
+        )
+        self.blocks = CrossBlocks(
+            num_blocks=num_blocks // 2,
+            block_type=f"{block_type}_cross",
+            lookahead=False,
+            **kwargs,
+        )
+        # initializer = tf.random_normal_initializer()
+
+    def call(self, inputs, targets, mfp_masks, training):
+        if training:
+            h_masked, mask = self.encoder(inputs, training=training)
+            h_tgt, _ = self.encoder(targets, training=training)
+
+            B, _, _ = tf.shape(h_masked)
+            z = self.enc_blocks(h_masked, mask, training=training)
+            tgt_mask = mask
+
+            # Prepend the beginning-of-seq embedding, and drop the last.
+            bos = tf.tile(self.bos, (B, 1, 1))
+            h = tf.concat([bos, h_tgt[:, :-1, :]], axis=1)
+            h = self.blocks((h, z), (tgt_mask, mask), training=training)
+            outputs = self.decoder(h, training=training)
+        else:
+            # add [CLS] token
+            h_masked, mask = self.encoder(inputs, training=training)
+            B, S, _ = tf.shape(h_masked)
+            z = self.enc_blocks(h_masked, mask, training=training)
+
+            h = tf.tile(self.bos, (B, 1, 1))
+            for t in range(S - 1):
+                tf.autograph.experimental.set_loop_options(
+                    shape_invariants=[
+                        (h, tf.TensorShape([None, None, self.latent_dim])),
+                    ]
+                )
+                next_elem = self._compute_next(
+                    (h, z), (mask[:, : t + 1], mask), inputs, mfp_masks
+                )
+                h = tf.concat([h, next_elem], axis=1)  # (B, (t+1)+1, 2*D)
+
+            # [<BOS>, T_{1}, ..., T_{t-1}] -> [T_{1}, ..., T_{t}]
+            h = self.blocks((h, z), (mask, mask), training=training)
+            outputs = self.decoder(h, training=training)
+
+        return outputs
+
+
+===== tensor_utils.py =====
+import logging
+import random
+from typing import Dict, List, Union
+
+import tensorflow as tf
+from mfp.models.architecture.mask import get_seq_mask
+
+logger = logging.getLogger(__name__)
+
+
+KEYS = ["type", "left", "top", "width", "height"]
+
+
+def sort_inputs(inputs: Dict, input_columns: Dict, from_logits: bool = False):
+    CONST = 100
+    # assert set(inputs.keys()) == (set(input_columns.keys()))
+    assert "length" in inputs
+    assert tf.executing_eagerly()
+    for key in KEYS:
+        assert key in inputs
+        assert input_columns[key]["input_dim"] < CONST
+
+    data = {k: tf.identity(v) for (k, v) in inputs.items()}
+    for key, column in input_columns.items():
+        if column["is_sequence"] and column["type"] == "categorical":
+            if from_logits:
+                data[key] = tf.argmax(data[key], axis=-1)
+            data[key] = tf.cast(data[key], tf.int64)
+
+    invalid = tf.logical_not(get_seq_mask(data["length"]))
+    priority = 0  # use int64 to avoid overflow
+    for key in KEYS:
+        priority = priority * CONST + data[key][..., 0]  # (B, S)
+    priority += tf.cast(invalid, tf.int64) * (CONST ** len(KEYS))
+    indices = tf.argsort(priority, axis=-1)
+
+    new_inputs = {}
+    for key in inputs:
+        val = tf.identity(inputs[key])
+        if key in input_columns and input_columns[key]["is_sequence"]:
+            new_inputs[key] = tf.gather(val, indices, batch_dims=1)
+        else:
+            new_inputs[key] = val
+    return new_inputs
+
+
+def shuffle_inputs(inputs: Dict):
+    """
+    Used to shuffle input sets for training
+    - auto-regressive models
+    - models that take shuffled sets as inputs
+    """
+    assert "length" in inputs and "left" in inputs
+    if tf.executing_eagerly():
+        shape = tf.shape(inputs["left"])
+        B = shape[0]
+        S = shape[1]
+        data = []
+        for i in range(B):
+            N = inputs["length"][i, 0] + 1
+            x = list(range(N))
+            random.shuffle(x)
+            x = x + list(range(N, S))
+            data.append(x)
+        indices = tf.convert_to_tensor(data)
+
+        new_inputs = {}
+        for key in inputs.keys():
+            val = tf.identity(inputs[key])
+            if val.shape[1] == S:
+                new_inputs[key] = tf.gather(val, indices, batch_dims=1)
+            else:
+                new_inputs[key] = val
+        return new_inputs
+    else:
+        logger.info("Shuffling sequences in order not to feed order for autoreg models")
+        # backdoor for model._make() (done in graph mode)
+        return inputs
+
+
+def reorganize_indices(
+    from_inds: tf.Tensor, n_elems: tf.Tensor, maxlen: Union[int, None] = None
+):
+    """
+    Used to reorganize the element order (for element-wise masking)
+    """
+    if tf.executing_eagerly():
+        tf.debugging.assert_rank(from_inds, 2)  # (B, 1)
+        tf.debugging.assert_rank(n_elems, 2)  # (B, 1)
+        # tf.debugging.assert_less_equal(from_inds, n_elems)
+        B = tf.shape(from_inds)[0]
+        if not maxlen:
+            maxlen = tf.reduce_max(n_elems).numpy() + 1
+        data = []
+        for i in range(B):
+            from_ind = from_inds[i, 0].numpy()
+            n_elem = n_elems[i, 0].numpy()
+            ids = list(range(maxlen))
+            del ids[from_ind]
+            ids = ids[:n_elem] + [from_ind] + ids[n_elem:]
+            data.append(ids)
+        return tf.convert_to_tensor(data)
+    else:
+        # backdoor for model._make() (done in graph mode)
+        B = tf.shape(n_elems)[0]
+        maxlen = tf.reduce_max(n_elems) + 1
+        indices = tf.tile(tf.range(maxlen)[tf.newaxis, :], (B, 1))
+        return indices
+
+
+def merge_list_of_dict_of_tensors(
+    inputs: List[Dict[str, tf.Tensor]], axis: int = 0
+) -> Dict[str, tf.Tensor]:
+    result = {}
+    for k in inputs[0].keys():
+        result[k] = tf.concat([x[k] for x in inputs], axis=axis)
+    return result
+
+
+def split_dict_of_tensors(
+    inputs: Dict[str, tf.Tensor], num_splits: int = 1, axis: int = 0
+) -> List[Dict[str, tf.Tensor]]:
+    result = [{} for _ in range(num_splits)]
+    for (k, v) in inputs.items():
+        for i, x in enumerate(tf.split(v, num_splits, axis=axis)):
+            result[i][k] = x
+            if i >= 1:  # num of dim. along axis should be divisible
+                tf.debugging.assert_equal(tf.shape(x), tf.shape(result[0][k]))
+    return result
+
+
+if __name__ == "__main__":
+    x = [
+        {"a": tf.reshape(tf.range(6), (2, 3)), "b": tf.zeros((3, 2))},
+        {"a": 10 + tf.reshape(tf.range(6), (2, 3)), "b": tf.ones((3, 2))},
+    ]
+    h = merge_list_of_dict_of_tensors(x, axis=0)
+
+
+===== metrics.py =====
+from typing import Dict, Union
+
+import tensorflow as tf
+from mfp.data.spec import get_valid_input_columns
+from mfp.models.architecture.mask import get_seq_mask
+
+from .tensor_utils import sort_inputs
+
+BIG_CONST = 1000.0
+
+
+def mae_from_logits(y_true: tf.Tensor, y_pred: tf.Tensor, from_logits: bool = True):
+    # tf.debugging.assert_rank(y_true, 2)
+    # tf.debugging.assert_rank(y_pred, 3)
+    tf.debugging.assert_equal(tf.rank(y_true) + 1, tf.rank(y_pred))
+
+    C = tf.shape(y_pred)[-1]
+    div = tf.cast(C - 1, tf.float32)
+    target = tf.cast(y_true, tf.float32)
+    target = target / div
+    output = tf.nn.softmax(y_pred) if from_logits else y_pred
+    values = tf.cast(tf.range(C), tf.float32) / div
+    if tf.rank(y_true) == 2:
+        output *= values[tf.newaxis, tf.newaxis, :]
+    elif tf.rank(y_true) == 3:
+        output *= values[tf.newaxis, tf.newaxis, tf.newaxis, :]
+    else:
+        raise NotImplementedError
+
+    output = tf.reduce_sum(output, axis=-1)
+    # loss = tf.keras.metrics.mean_absolute_error(target, output)
+    loss = tf.math.abs(target - output)
+    return loss
+
+
+def compute_categorical_mfp_metric(
+    y_true: tf.Tensor, y_pred: tf.Tensor, from_logits: bool = True
+):
+    # shape of y_true and y_pred is (..., C, X)
+    # shape of loss and score is both (..., C)
+    if from_logits:
+        y_pred_ = tf.nn.softmax(y_pred)
+    else:
+        y_pred_ = y_pred
+
+    y_pred_argmax = tf.argmax(y_pred_, axis=-1, output_type=tf.int32)
+    loss = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred_)
+    score = tf.cast(y_true == y_pred_argmax, tf.float32)
+    return loss, score
+
+
+def compute_continuous_mfp_metric(y_true: tf.Tensor, y_pred: tf.Tensor):
+    # shape of y_true and y_pred is (..., C, X)
+    # shape of loss and score is both (..., )
+    loss = tf.keras.losses.mean_squared_error(y_true, y_pred)
+    score = -0.5 * tf.keras.losses.cosine_similarity(y_true, y_pred) + 0.5
+    return loss, score
+
+
+class BeautyLayer(tf.keras.layers.Layer):
+    """
+    For definition of each metric, please refer to
+    Attribute-conditioned Layout GAN for Automatic Graphic Design
+    https://arxiv.org/abs/2009.05284
+    """
+
+    def __init__(self, input_columns: Dict, name: str = "beauty_layer", **kwargs):
+        super().__init__(name=name, **kwargs)
+        assert "left" in input_columns and "width" in input_columns
+        self.input_columns = input_columns
+
+    def call(self, inputs, training=False, from_logits: bool = True):
+        if from_logits:
+            y_pred, masks = inputs
+        else:
+            y_true, masks = inputs
+        mask = masks["left"]  # (B, S)
+        B, S = tf.shape(mask)
+
+        mask_float = tf.cast(mask, tf.float32)
+        count = tf.reduce_sum(mask_float, axis=-1)
+        num_invalid_documents = tf.reduce_sum(tf.cast(count <= 1, tf.float32))
+        num_valid_documents = tf.cast(B, tf.float32) - num_invalid_documents
+
+        data = {}
+        for key in ["left", "width", "top", "height"]:
+            column = self.input_columns[key]
+            C = tf.cast(column["input_dim"], tf.float32)
+            if from_logits:
+                coords = tf.math.argmax(y_pred[key], axis=-1)[..., 0]  # (B, S)
+            else:
+                coords = y_true[key][..., 0]
+            data[key] = tf.cast(coords, tf.float32) / (C - 1)  # (B, S)
+
+        eye = tf.eye(S, batch_shape=[B], dtype=tf.bool)
+        valid = tf.math.logical_and(mask[:, tf.newaxis, :], mask[..., tf.newaxis])
+        invalid = tf.math.logical_or(eye, tf.logical_not(valid))
+
+        keys = [("left", "width"), ("top", "height")]
+        diff = []
+        for (start_key, interval_key) in keys:
+            for i in range(3):
+                s = i / 2
+                h = data[start_key] + data[interval_key] * s  # (B, S)
+                h = h[:, :, tf.newaxis] - h[:, tf.newaxis, :]  # (B, S, S)
+                # Eq. 11
+                h = tf.math.abs(h)
+                h = tf.where(invalid, tf.ones_like(h), h)
+                h = tf.reduce_min(h, axis=-1)  # (B, S)
+                h = -1.0 * tf.math.log(1.0 - h)
+                diff.append(h)
+
+        # Eq. 10
+        diff = tf.stack(diff, axis=-1)  # (B, S, 6)
+        diff = tf.reduce_min(diff, axis=-1)  # (B, S)
+        diff = tf.where(tf.math.is_finite(diff), diff, tf.zeros_like(diff))
+        alignment = tf.reduce_sum(diff, axis=-1) / count  # (B, )
+        alignment = tf.where(count > 1, alignment, tf.zeros_like(alignment))
+
+        # Overlap
+        right = data["left"] + data["width"]
+        bottom = data["top"] + data["height"]
+        l1, t1 = data["left"][..., tf.newaxis], data["top"][..., tf.newaxis]
+        r1, b1 = right[..., tf.newaxis], bottom[..., tf.newaxis]
+        l2, t2 = data["left"][:, tf.newaxis, :], data["top"][:, tf.newaxis, :]
+        r2, b2 = right[:, tf.newaxis, :], bottom[:, tf.newaxis, :]
+
+        a1 = (r1 - l1) * (b1 - t1)
+        l_max, t_max = tf.math.maximum(l1, l2), tf.math.maximum(t1, t2)
+        r_min, b_min = tf.math.minimum(r1, r2), tf.math.minimum(b1, b2)
+        cond = (l_max < r_min) & (t_max < b_min)
+        ai = (r_min - l_max) * (b_min - t_max)
+        ai = tf.where((cond & tf.logical_not(eye)), ai, tf.zeros_like(ai))
+        ai = tf.where(a1 > 0.0, ai / a1, tf.zeros_like(ai))
+        overlap = tf.reduce_sum(ai, axis=[-2, -1]) / count
+        overlap = tf.where(count > 1, overlap, tf.zeros_like(overlap))
+
+        # lb = data["type"]
+        # label_match = (lb[..., tf.newaxis] == lb[:, tf.newaxis, :])
+
+        # au = a1 + a2 - ai
+        # iou = tf.where(au > 0.0, ai / au, tf.zeros_like(au))
+        # cost = tf.fill(tf.shape(ai), 10000.0)
+        # cost = tf.where(label_match & valid, 1.0 - iou, cost)
+        # # cost = 1.0 - iou  # (0.0 is best, 1.0 is worst)
+        # for i in range(B):
+        #     score = 0.0
+        #     # for (j, k) in linear_sum_assignment(cost[i]):
+        #     #     score +=
+
+        scores = {
+            "alignment_num": tf.reduce_sum(alignment),
+            "alignment_den": num_valid_documents,
+            "overlap_num": tf.reduce_sum(overlap),
+            "overlap_den": num_valid_documents,
+        }
+        return scores
+
+
+class LossLayer(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        name: str = "loss_layer",
+        predict_context: bool = False,
+        **kwargs,
+    ):
+        super().__init__(name=name, **kwargs)
+        self._input_columns = input_columns
+        self._valid_input_columns = get_valid_input_columns(input_columns)
+        self._predict_context = predict_context
+
+    def call(
+        self,
+        inputs,
+        training=False,
+        sort_flag: Union[bool, tf.Tensor] = None,
+        ignore_sort: str = None,
+    ):
+        if tf.is_tensor(sort_flag):
+            assert ignore_sort in ["gt", "pred", None]
+            y_true_, y_pred_, mfp_masks = inputs
+            if ignore_sort == "gt":
+                y_true_sort = y_true_
+            else:
+                y_true_sort = sort_inputs(y_true_, self._valid_input_columns)
+
+            y_pred_["length"] = y_true_["length"]
+            if ignore_sort == "pred":
+                y_pred_sort = y_pred_
+            else:
+                y_pred_sort = sort_inputs(
+                    y_pred_, self._valid_input_columns, from_logits=True
+                )
+
+            y_true, y_pred = {}, {}
+            for key in y_true_.keys():
+                column = self._input_columns[key]
+                if column.get("demo_only", False):
+                    continue
+                if column["is_sequence"]:
+                    flag = sort_flag[:, tf.newaxis, tf.newaxis]
+                    y_true[key] = tf.where(flag, y_true_sort[key], y_true_[key])
+                    if column["type"] == "categorical":
+                        flag = flag[:, tf.newaxis]
+                    y_pred[key] = tf.where(flag, y_pred_sort[key], y_pred_[key])
+                else:
+                    if key in y_true_:
+                        y_true[key] = y_true_[key]
+                    if key in y_pred_:
+                        y_pred[key] = y_pred_[key]
+        else:
+            y_true, y_pred, mfp_masks = inputs
+
+        seq_mask = get_seq_mask(y_true["length"])
+
+        loss_total = 0
+        score_total = 0
+        losses = {}
+        scores = {}
+
+        for key, column in self._input_columns.items():
+            if column.get("demo_only", False):
+                continue
+
+            if not column["is_sequence"] and not self._predict_context:
+                continue
+
+            prediction = y_pred[key]
+            # Cut extra elements in prediction.
+            prediction = prediction[:, : tf.shape(seq_mask)[1]]
+
+            if column["type"] == "categorical":
+                # check if the labels are in intended range of values
+                C = tf.cast(column["input_dim"], tf.int32)
+                tf.debugging.assert_less_equal(tf.reduce_max(y_true[key]), C - 1)
+                tf.debugging.assert_greater_equal(tf.reduce_min(y_true[key]), 0)
+
+                y_true[key] = tf.cast(y_true[key], tf.int32)
+                loss, score = compute_categorical_mfp_metric(
+                    y_true[key], prediction, from_logits=True
+                )
+                # if key == 'font_size':
+                #     score = mae_from_logits(y_true[key], prediction, from_logits=True)
+            else:
+                loss, score = compute_continuous_mfp_metric(y_true[key], prediction)
+                loss = tf.expand_dims(loss, -1)
+                loss = loss * tf.cast(column["shape"][-1], tf.float32)
+                score = tf.expand_dims(score, -1)
+
+            mfp_weight = tf.cast(mfp_masks[key][..., tf.newaxis], tf.float32)
+            loss *= mfp_weight
+            score *= mfp_weight
+            den = tf.cast(tf.ones(tf.shape(loss)), tf.float32) * mfp_weight
+
+            if "loss_condition" in column:
+                cond = column["loss_condition"]
+                weight = tf.gather(cond["mask"], y_true[cond["key"]])
+                loss *= tf.cast(weight, tf.float32)
+                score *= tf.cast(weight, tf.float32)
+                den *= tf.cast(weight, tf.float32)
+
+            if column["is_sequence"]:
+                weight = tf.cast(seq_mask[:, :, tf.newaxis], tf.float32)
+                loss = tf.reduce_sum(loss * weight, axis=1)  # sum timesteps
+                score = tf.reduce_sum(score * weight, axis=1)
+                den = tf.reduce_sum(den * weight, axis=1)
+
+            loss = tf.reduce_sum(loss, axis=1)  # sum features
+            score = tf.reduce_sum(score, axis=1)
+            den = tf.reduce_sum(den, axis=1)
+
+            tf.debugging.assert_rank(loss, 1)
+            tf.debugging.assert_rank(score, 1)
+            tf.debugging.assert_rank(den, 1)
+
+            loss = tf.reduce_mean(loss)  # average batch
+
+            score = tf.reduce_sum(score)
+            den = tf.reduce_sum(den)
+            normalized_score = tf.where(den == 0.0, 1.0, score / den)
+
+            score_total += normalized_score
+
+            self.add_metric(normalized_score, name=key + "_score")
+
+            scores[key + "_score_num"] = score
+            scores[key + "_score_den"] = den
+            losses[key] = loss
+
+        losses_normalized = losses  # currently no reweight operation
+
+        for key, loss in losses_normalized.items():
+            self.add_metric(loss, name=key + "_loss")
+            loss_total += loss
+
+        self.add_loss(loss_total)
+        self.add_metric(score_total / len(self._input_columns), name="total_score")
+        return [scores]
+
+
+class LayoutMetricLayer(tf.keras.layers.Layer):
+    """Compute Accuracy and mean IoU of the layout map."""
+
+    def __init__(self, input_columns, from_logits=True, **kwargs):
+        super().__init__(**kwargs)
+        self._xsize = tf.cast(input_columns["left"]["input_dim"], tf.int32)
+        self._ysize = tf.cast(input_columns["top"]["input_dim"], tf.int32)
+        self._label_name = next(
+            key for key, c in input_columns.items() if c["primary_label"] is not None
+        )
+        self._default_label = tf.cast(
+            input_columns[self._label_name]["primary_label"], tf.int32
+        )
+        self._label_size = tf.cast(
+            input_columns[self._label_name]["input_dim"], tf.int32
+        )
+        self._from_logits = from_logits
+        assert input_columns["left"]["input_dim"] == input_columns["width"]["input_dim"]
+        assert input_columns["top"]["input_dim"] == input_columns["height"]["input_dim"]
+
+    def call(self, inputs, training=False):
+        y_true, y_pred = inputs
+        mask_true, mask_pred = self._get_seq_masks(y_true, y_pred, training)
+        map_true = _compute_gridmaps(
+            y_true,
+            mask_true,
+            from_logits=False,
+            label_name=self._label_name,
+            xsize=self._xsize,
+            ysize=self._ysize,
+            default_label=self._default_label,
+        )
+        map_pred = _compute_gridmaps(
+            y_pred,
+            mask_pred,
+            from_logits=self._from_logits,
+            label_name=self._label_name,
+            xsize=self._xsize,
+            ysize=self._ysize,
+            default_label=self._default_label,
+        )
+        acc, miou = _compute_acc_miou(map_true, map_pred, self._label_size)
+        self.add_metric(acc, name="layout_acc")
+        self.add_metric(miou, name="layout_miou")
+        return {"layout_acc": acc, "layout_miou": miou}
+
+    def _get_seq_masks(self, y_true, y_pred, training):
+        maxlen = tf.shape(y_true[self._label_name])[1]
+        seq_mask_true = get_seq_mask(y_true["length"], maxlen=maxlen)
+        if training:
+            seq_mask_pred = seq_mask_true
+        else:
+            maxlen = tf.shape(y_pred[self._label_name])[1]
+            seq_mask_pred = get_seq_mask(
+                y_pred["length"],
+                from_logits=self._from_logits,
+                maxlen=maxlen,
+            )
+        tf.debugging.assert_rank(seq_mask_true, 2)
+        tf.debugging.assert_rank(seq_mask_pred, 2)
+        return seq_mask_true, seq_mask_pred
+
+
+# @tf.function(experimental_relax_shapes=True)
+def _compute_gridmaps(
+    example,
+    mask,
+    from_logits,
+    label_name,
+    xsize,
+    ysize,
+    default_label,
+):
+    if from_logits:
+        # Assume all categorical here.
+        example = {
+            key: tf.cast(
+                tf.argmax(tf.stop_gradient(example[key]), axis=-1),
+                tf.int32,
+            )
+            for key in ("left", "top", "width", "height", label_name)
+        }
+    else:
+        example = {
+            key: tf.cast(tf.stop_gradient(example[key]), tf.int32)
+            for key in ("left", "top", "width", "height", label_name)
+        }
+
+    batch_size = tf.shape(mask)[0]
+    gridmaps = tf.TensorArray(tf.int32, size=batch_size)
+    for i in tf.range(batch_size):
+        left = tf.reshape(example["left"][i][mask[i]], (-1,))
+        top = tf.reshape(example["top"][i][mask[i]], (-1,))
+        width = tf.reshape(example["width"][i][mask[i]], (-1,))
+        height = tf.reshape(example["height"][i][mask[i]], (-1,))
+
+        label = tf.cast(
+            tf.reshape(example[label_name][i][mask[i]], (-1,)),
+            tf.int32,
+        )
+        tf.assert_rank(left, 1)
+
+        right = tf.minimum(xsize - 1, left + width)
+        bottom = tf.minimum(ysize - 1, top + height)
+
+        gridmap = _make_gridmap(
+            left,
+            top,
+            right,
+            bottom,
+            label,
+            ysize,
+            xsize,
+            default_label,
+        )
+        gridmaps = gridmaps.write(i, gridmap)
+    return gridmaps.stack()
+
+
+# @tf.function(experimental_relax_shapes=True)
+def _make_gridmap(left, top, right, bottom, label, ysize, xsize, default_label):
+    # Fill bbox region with the specified label.
+    canvas = tf.fill((ysize, xsize), default_label)
+    for j in tf.range(tf.shape(label)[0]):
+        if top[j] >= bottom[j] or left[j] >= right[j]:
+            continue
+        y, x = tf.meshgrid(
+            tf.range(top[j], bottom[j] + 1),
+            tf.range(left[j], right[j] + 1),
+        )
+        indices = tf.stack([tf.reshape(y, (-1,)), tf.reshape(x, (-1,))], axis=1)
+        updates = tf.fill((tf.shape(indices)[0],), label[j])
+        canvas = tf.tensor_scatter_nd_update(canvas, indices, updates)
+    return canvas
+
+
+# @tf.function(experimental_relax_shapes=True)
+def _compute_acc_miou(map_true, map_pred, label_size):
+    batch_size = tf.shape(map_pred)[0]
+    batch_index = tf.reshape(
+        tf.tile(tf.range(batch_size)[:, tf.newaxis], [1, tf.size(map_pred[0])]),
+        (-1,),
+    )
+    indices = tf.stack(
+        [
+            tf.cast(batch_index, tf.int32),
+            tf.reshape(map_pred, (-1,)),
+            tf.reshape(map_true, (-1,)),
+        ],
+        axis=1,
+    )
+    updates = tf.ones((tf.shape(indices)[0],), dtype=tf.int32)
+    confusion = tf.cast(
+        tf.scatter_nd(indices, updates, (batch_size, label_size, label_size)),
+        tf.float32,
+    )
+
+    inter = tf.linalg.diag_part(confusion)
+    union = tf.reduce_sum(confusion, axis=1) + tf.reduce_sum(confusion, axis=2) - inter
+
+    # Compute accuracy
+    acc = tf.math.truediv(
+        tf.reduce_sum(inter, axis=1), tf.reduce_sum(confusion, axis=(1, 2))
+    )
+
+    # Compute nanmean of iou.
+    weight = tf.cast(union > 0, tf.float32)
+    iou = inter / (union + 1e-9)
+    miou = tf.reduce_sum(weight * iou, axis=1) / tf.reduce_sum(weight, axis=1)
+    return acc, miou
+
+
+===== spec.py =====
+import json
+import logging
+import os
+from typing import Dict, List
+
+import numpy as np
+import tensorflow as tf
+import yaml
+from tensorflow.keras.layers.experimental import preprocessing
+# from tensorflow.keras import preprocessing
+
+from .discretizer import SequenceDiscretizer
+# from discretizer import SequenceDiscretizer
+
+logger = logging.getLogger(__name__)
+
+
+def set_visual_default(decoded_data: Dict):
+    for i in range(len(decoded_data["elements"])):
+        decoded_data["elements"][i]["color"] = [0.0, 0.0, 0.0]
+        decoded_data["elements"][i]["opacity"] = 1.0
+        decoded_data["elements"][i]["font_family"] = "DummyFont"
+    return decoded_data
+
+
+class DataSpec(object):
+    """
+    Utility class to handle data schema.
+
+    We assume the following directory structure::
+
+        root/
+        root/count.json
+        root/vocabulary.json
+        root/train-*-of-*.tfrecord
+        root/val-*-of-*.tfrecord
+        root/test-*-of-*.tfrecord
+
+    Additionally, there must be a spec file in YAML format (loaded via name)::
+
+        name: rico
+        columns:
+          column1:
+            shape: []
+            dtype: int64
+          column2:
+            is_sequence: true
+            dtype: string
+            lookup:
+              num_oov_indices: 1
+              mask_token: null
+
+    Usage::
+
+        dataspec = DataSpec('crello', '/path/to/tfrecords', batch_size=256)
+
+        train_dataset = dataspec.make_dataset(
+            'train', shuffle=True, cache=True)
+        batch = next(iter(train_dataset))
+
+        for item in dataspec.unbatch(batch):
+            print(item)
+    """
+
+    def __init__(
+        self,
+        name,
+        path,
+        batch_size=8,
+    ):
+        self._path = path
+        self._batch_size = batch_size
+
+        spec_path = os.path.join(os.path.dirname(__file__), name + "-spec.yml")
+        if os.path.exists(spec_path):
+            name = spec_path
+        self._spec = self._load_resource(spec_path, rel_path=False)
+        self._splits = self._load_resource("count.json")
+        self._init_preprocessor()
+
+    @property
+    def columns(self):
+        return self._spec.get("columns", {})
+
+    @property
+    def preprocessor(self):
+        return self._preprocessor
+
+    def _init_preprocessor(self):
+        # Initialize preprocessing functions.
+        vocabulary = self._load_resource("vocabulary.json")
+
+        self._preprocessor = {}
+        for name, column in self.columns.items():
+            if "lookup" in column:
+                self._preprocessor[name] = self._create_lookup(name, column, vocabulary)
+            elif "discretize" in column:
+                spec = column["discretize"]
+                boundaries = list(np.linspace(spec["min"], spec["max"], spec["bins"]))[
+                    1:
+                ]
+                self._preprocessor[name] = SequenceDiscretizer(boundaries)
+                logger.info("Discretizer for %s: bins=%s" % (name, len(boundaries) + 1))
+
+    def _create_lookup(self, name, column, vocabulary):
+        assert name in vocabulary or "vocabulary" in column["lookup"]
+        layer_fn = {
+            "string": preprocessing.StringLookup,
+            "int64": preprocessing.IntegerLookup,
+        }[column["dtype"]]
+
+        if name in vocabulary:
+            vocab = vocabulary[name]
+        else:
+            # Integer [min, max] vocabulary.
+            min_value = column["lookup"]["vocabulary"]["min"]
+            max_value = column["lookup"]["vocabulary"]["max"]
+            vocab = list(range(min_value, max_value + 1))
+        if isinstance(vocab, dict):
+            vocab = [
+                int(key) if column["dtype"] == "int64" else key
+                for key, value in vocab.items()
+                if value >= column.get("min_freq", 1)
+            ]
+
+        options = (
+            {}
+            if column["lookup"] is True
+            else {k: v for k, v in column["lookup"].items() if k != "vocabulary"}
+        )
+        logger.info(
+            "Lookup for %s: vocabulary_size=%s, options=%s"
+            % (name, len(vocab), options)
+        )
+
+        return layer_fn(vocabulary=vocab, **options)
+
+    def size(self, split):
+        """Length of the records for the split."""
+        return self._splits[split]
+
+    def steps_per_epoch(self, split, batch_size=None):
+        """Steps per epoch."""
+        return int(np.ceil(self.size(split) / (batch_size or self._batch_size)))
+
+    def make_input_columns(self):
+        """Returns input specification for a model."""
+        inputs = {}
+        for key, column in self.columns.items():
+            # Inspect categorical inputs and its size.
+            layer = self._preprocessor.get(key)
+            if column.get("demo_only", False):
+                # for demo-only elements
+                inputs[key] = {"demo_only": True}
+            elif isinstance(layer, SequenceDiscretizer):
+                inputs[key] = {
+                    "type": "categorical",
+                    "input_dim": len(layer.bin_boundaries) + 1,
+                }
+            elif isinstance(
+                layer,
+                (
+                    preprocessing.StringLookup,
+                    preprocessing.IntegerLookup,
+                ),
+            ):
+                if tf.__version__.split(".")[1] in ("3", "4"):
+                    vocabulary_size = layer.vocab_size()
+                else:
+                    vocabulary_size = layer.vocabulary_size()
+                inputs[key] = {
+                    "type": "categorical",
+                    "input_dim": vocabulary_size,
+                }
+            elif column["dtype"] in ("int", "int32", "int64"):
+                inputs[key] = {
+                    "type": "categorical",
+                    "input_dim": column["max"] + 1,  # Include zero.
+                }
+            elif column["dtype"] in ("float", "float32", "float64"):
+                inputs[key] = {
+                    "type": "numerical",
+                }
+            else:
+                raise NotImplementedError
+
+            inputs[key]["shape"] = tuple(column.get("shape", (1,)))
+            inputs[key]["is_sequence"] = column.get("is_sequence", False)
+
+            if "primary_label" in column:
+                inputs[key]["primary_label"] = self._preprocessor[key](
+                    column["primary_label"]["default"]
+                )
+            else:
+                inputs[key]["primary_label"] = None
+
+        for key, column in self.columns.items():
+            if "loss_condition" in column:
+                cond = column["loss_condition"]
+                logger.info(
+                    "Loss condition for %s: %s included in %s"
+                    % (key, cond["key"], cond["values"])
+                )
+                mask = [
+                    v in cond["values"]
+                    for v in self._preprocessor[cond["key"]].get_vocabulary()
+                ]
+                inputs[key]["loss_condition"] = {
+                    "key": cond["key"],
+                    "mask": mask,
+                }
+                # inputs[key]["loss_condition"] = {
+                #     "key": cond["key"],
+                #     "mask": mask[1:],
+                # }
+
+        return inputs
+
+    def make_dataset(
+        self,
+        split,
+        batch_size=None,
+        shuffle=None,
+        repeat=False,
+        prefetch=tf.data.experimental.AUTOTUNE,
+        parallel=None,
+        cache=None,
+    ):
+        assert split in self._splits, "split must be one of (%s)" % ", ".join(
+            self._splits.keys()
+        )
+        if shuffle is True:
+            shuffle = self.size(split)
+        if parallel is None:
+            parallel = tf.data.experimental.AUTOTUNE if shuffle else None
+
+        file_pattern = os.path.join(self._path, split + "-*.tfrecord")
+        logger.info("TFRecord from %s" % file_pattern)
+        dataset = tf.data.Dataset.list_files(file_pattern, shuffle=shuffle)
+        dataset = tf.data.TFRecordDataset(
+            dataset,
+            num_parallel_reads=parallel,
+        )
+        if cache:
+            dataset = dataset.cache()
+        if shuffle:
+            dataset = dataset.shuffle(shuffle)
+        if repeat:
+            dataset = dataset.repeat()
+        dataset = dataset.batch(batch_size or self._batch_size)
+        dataset = dataset.map(
+            self.parse_fn,
+            num_parallel_calls=parallel,
+            deterministic=(shuffle is False),
+        )
+        if prefetch:
+            dataset = dataset.prefetch(prefetch)
+
+        return dataset
+
+    def parse_fn(self, serialized):
+        context, sequence, _ = tf.io.parse_sequence_example(
+            serialized,
+            {
+                name: tf.io.FixedLenFeature(
+                    column.get("shape", (1,)),
+                    column["dtype"],
+                )
+                for name, column in self.columns.items()
+                if not column.get("is_sequence")
+            },
+            {
+                name: tf.io.FixedLenSequenceFeature(
+                    column.get("shape", (1,)),
+                    column["dtype"],
+                )
+                for name, column in self.columns.items()
+                if column.get("is_sequence")
+            },
+        )
+        output = context
+        output.update(sequence)
+
+        for key, preprocess_fn in self._preprocessor.items():
+            output[key] = preprocess_fn(output[key])
+
+        # default data type is int64
+        # string lookup returns int64 and discretization returns int32
+        for key in output.keys():
+            if output[key].dtype == tf.int64:
+                output[key] = tf.cast(output[key], tf.int32)
+
+        return output
+
+    def logit_to_label(self, example):
+        """Convert logit prediction to labels."""
+        for key, column in self.columns.items():
+            if column.get("demo_only", False):
+                continue
+
+            rank = 1 + column.get("is_sequence", 0) + len(column.get("shape", (1,)))
+            if tf.rank(example[key]) >= rank + 1:
+                example[key] = tf.cast(tf.argmax(example[key], axis=-1), tf.int32)
+        return example
+
+    def unbatch(self, example):
+        """
+        Convert a batch tensor example to a list of items for post-processing.
+
+        Sequence items get stored in `elements` while others are in dict::
+
+            items = [{key: value, 'elements': [{key: value}]}]
+        """
+
+        example = self.logit_to_label(example)
+        batch_size = tf.shape(example["length"])[0]
+
+        items = []
+        for i in range(batch_size):
+            # Find length.
+            length = int(tf.squeeze(example["length"][i]) + 1)  # zero-based
+            for name, column in self.columns.items():
+                if column.get("is_sequence"):
+                    length = min(length, tf.shape(example[name][i])[0])
+                    break
+
+            # Fill in items.
+            item = {"elements": [{} for _ in range(length)]}
+            for name, column in self.columns.items():
+                x = example[name][i].numpy()
+
+                # Un-preprocess.
+                if "lookup" in column:
+                    layer = self._preprocessor.get(name)
+                    table = np.array(layer.get_vocabulary())
+                    x = table[x]
+                elif "discretize" in column:
+                    spec = column["discretize"]
+                    scale = (spec["max"] - spec["min"]) / (spec["bins"] - 1.0)
+                    x = scale * x + spec["min"]
+
+                if column.get("is_sequence"):
+                    for j in range(length):
+                        item["elements"][j][name] = (
+                            x[j, :].tolist() if x.shape[1] > 1 else x[j, 0]
+                        )
+                else:
+                    item[name] = x[0]
+            items.append(item)
+        return items
+
+    def _load_resource(self, path, format=None, rel_path=True):
+        """Load resource file."""
+        format = format or os.path.splitext(path)[-1]
+        format = format.replace(".", "").lower()
+
+        if rel_path:
+            path = os.path.join(self._path, path)
+        logger.info("Loading resource at %s" % path)
+        with tf.io.gfile.GFile(path) as f:
+            if format == "json":
+                return json.load(f)
+            elif format in ("yml", "yaml"):
+                return yaml.safe_load(f)
+            else:
+                logger.warning("Unsupported format: %s" % path)
+                return f.read()
+
+
+ATTRIBUTE_GROUPS = {
+    "rico": {
+        "type": ["type"],
+        "pos": ["left", "top", "width", "height"],
+        "attr": ["icon", "clickable", "text_button"],
+    },
+    "crello": {
+        "type": ["type"],
+        "pos": ["left", "top", "width", "height"],
+        "attr": ["opacity", "color", "font_family"],
+        "img": ["image_embedding"],
+        "txt": ["text_embedding"],
+    },
+    # "pose":{
+    #     "type": ["type"],
+    #     "pos": ["left", "top", "width", "height"],
+    #     "img": ["image_embedding"],
+    # }
+    "dataforfd": {
+        "type": ["type"],
+        "pos": ["left", "top", "width", "height"],
+        "img": ["image_embedding"],
+    }
+}
+
+
+def get_dataset_name(keys: List[str]):
+    # if "clickable" in keys:
+    #     dataset_name = "rico"
+    # else:
+    #     dataset_name = "crello"
+    dataset_name="dataforfd"
+    return dataset_name
+
+
+def get_attribute_groups(keys: List[str]):
+    dataset_name = get_dataset_name(keys)
+    return ATTRIBUTE_GROUPS[dataset_name]
+
+
+def get_valid_input_columns(input_columns: Dict, use_canvas: bool = False):
+    outputs = {}
+    for (key, column) in input_columns.items():
+        if key == "length":
+            continue
+        if column.get("demo_only", False):
+            continue
+        if not column["is_sequence"] and not use_canvas:
+            continue
+        outputs[key] = column
+    return outputs
+
+
+===== cvae.py =====
+from typing import Dict, Tuple
+
+import tensorflow as tf
+from mfp.models.architecture.utils import make_dense_options
+
+
+class Head(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        latent_dim: int = 32,
+        kl: float = 1.0,
+        l2: float = None,
+        compute_kl: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+        self.fc_mean = tf.keras.layers.Dense(
+            units=latent_dim,
+            **make_dense_options(l2),
+        )
+        self.fc_log_sigma = tf.keras.layers.Dense(
+            units=latent_dim,
+            **make_dense_options(l2),
+        )
+        self.kl = kl
+        self.compute_kl = compute_kl
+
+    def reparameterize(self, z_mean: tf.Tensor, z_log_sigma: tf.Tensor):
+        epsilon = tf.random.normal(shape=tf.shape(z_log_sigma))
+        return z_mean + tf.exp(0.5 * z_log_sigma) * epsilon
+
+    def call(self, h: tf.Tensor, training: bool = False) -> Dict[str, tf.Tensor]:
+        z_mean = self.fc_mean(h)
+        z_log_sigma = self.fc_log_sigma(h)
+        if training:
+            z = self.reparameterize(z_mean, z_log_sigma)
+        else:
+            z = z_mean
+
+        if training and self.compute_kl:
+            # Compute KL divergence to normal distribution.
+            kl_div = -0.5 * tf.reduce_mean(
+                1 + z_log_sigma - tf.square(z_mean) - tf.exp(z_log_sigma)
+            )
+            self.add_loss(self.kl * kl_div)
+            self.add_metric(kl_div, name="kl_divergence")
+
+        return {"z": z, "z_mean": z_mean, "z_log_sigma": z_log_sigma}
+
+
+class Prior(tf.keras.layers.Layer):
+    def __init__(self, l2: float = None):
+        super().__init__()
+        latent_dim = 32
+        self.fc = tf.keras.layers.Dense(
+            units=latent_dim,
+            activation="relu",
+            **make_dense_options(l2),
+        )
+        self.head = Head(l2=l2)
+
+    def call(self, h: tf.Tensor, training: bool = False) -> Dict[str, tf.Tensor]:
+        return self.head(self.fc(h), training=training)
+
+
+class MAPrior(tf.keras.layers.Layer):
+    """
+    It has separate models for each attribute
+    """
+
+    def __init__(
+        self,
+        input_columns: Dict,
+        l2: float = None,
+    ):
+        super().__init__()
+        self.input_columns = input_columns
+
+        self.layers = {}
+        for key in input_columns:
+            self.layers[key] = Prior(l2=l2)
+
+    def call(
+        self,
+        context: tf.Tensor,
+        training: bool = False,
+    ) -> Dict[str, Dict[str, tf.Tensor]]:
+        outputs = {}
+        for key, layer in self.layers.items():
+            outputs[key] = layer(context, training=training)
+        return outputs
+
+
+class VAEEncoder(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        l2: float = None,
+    ):
+        super().__init__()
+        dim_in, dim_out = 128, 32
+        self.fc1 = tf.keras.layers.Dense(
+            units=dim_in,
+            **make_dense_options(l2),
+        )
+        self.fc2 = tf.keras.layers.Dense(
+            units=dim_out,
+            activation="relu",
+            **make_dense_options(l2),
+        )
+        self.head = Head(l2=l2)
+
+    def call(
+        self, hidden: tf.Tensor, context: tf.Tensor, training: bool = False
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        h = self.fc1(hidden)
+        h = tf.concat([h, context], axis=-1)
+        h = self.fc2(h)
+        return self.head(h, training=training)
+
+
+class MACVAEEncoder(tf.keras.layers.Layer):
+    """
+    It has separate models for each attribute
+    """
+
+    def __init__(
+        self,
+        input_columns: Dict,
+        l2: float = None,
+    ):
+        super().__init__()
+        self.input_columns = input_columns
+
+        self.layers = {}
+        for key in input_columns:
+            self.layers[key] = VAEEncoder(l2=l2)
+
+    def call(
+        self,
+        h_gts: Dict[str, tf.Tensor],
+        context: tf.Tensor,
+        training: bool = False,
+    ) -> Dict[str, Dict[str, tf.Tensor]]:
+        outputs = {}
+        for key, layer in self.layers.items():
+            outputs[key] = layer(h_gts[key], context, training=training)
+        return outputs
+
+
+class VAEDecoder(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        l2: float = None,
+    ):
+        super().__init__()
+        latent_dim, dim_out = 128, 64
+        self.model = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(
+                    units=latent_dim,
+                    activation="relu",
+                    **make_dense_options(l2),
+                ),
+                tf.keras.layers.Dense(
+                    units=dim_out,
+                    activation="relu",
+                    **make_dense_options(l2),
+                ),
+            ]
+        )
+
+    def call(
+        self, z: tf.Tensor, context: tf.Tensor, training: bool = False
+    ) -> tf.Tensor:
+        h = tf.concat([z, context], axis=-1)
+        return self.model(h)
+
+
+class MACVAEDecoder(tf.keras.layers.Layer):
+    """
+    It has separate models for each attribute
+    """
+
+    def __init__(
+        self,
+        input_columns: Dict,
+        l2: float = None,
+    ):
+        super().__init__()
+        self.input_columns = input_columns
+        self.layers = {}
+        for key in input_columns:
+            self.layers[key] = VAEDecoder(l2=l2)
+
+    def call(
+        self,
+        zs: Dict[str, tf.Tensor],
+        context: tf.Tensor,
+        training: bool = False,
+    ) -> Dict[str, tf.Tensor]:
+        outputs = {}
+        for key, layer in self.layers.items():
+            outputs[key] = layer(zs[key], context, training=training)
+        return outputs
+
+
+===== mfp.py =====
+import logging
+from typing import Dict, List, Optional
+
+import tensorflow as tf
+import tensorflow_probability as tfp
+from mfp.data.spec import get_attribute_groups, get_dataset_name
+from mfp.models.architecture.mask import get_seq_mask
+from mfp.models.canvasvae import CanvasVAE
+from mfp.models.layoutvae import LayoutVAE
+from mfp.models.masking import (
+    apply_token,
+    elem_masking,
+    feat_masking,
+    filter_padding,
+    get_task_names,
+    random_masking,
+)
+from mfp.models.model import BART, AutoReg, Model, VanillaTransformer
+
+from .metrics import LossLayer
+from .tensor_utils import shuffle_inputs, sort_inputs
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+# def load_weights(model: tf.keras.Model, weight_path: str):
+#     model.compile(optimizer="adam")
+#     logger.info(f"Loading: {weight_path}")
+#     model.load_weights(weight_path)
+#     return model
+
+
+def get_task_cat_dist_sampler(task_names: List[str], masking_method: str):
+    used_names = masking_method.split("_")
+    probs = [1.0 if name in used_names else 0.0 for name in task_names]
+    probs_total = sum(probs)
+    assert probs_total > 0.0
+
+    probs = [p / probs_total for p in probs]
+    logger.info([item for item in zip(task_names, probs)])
+    sampler = tfp.distributions.Categorical(logits=tf.math.log(probs))
+    return sampler
+
+
+def merge_inputs_and_prediction(inputs, input_columns, masks, prediction):
+    for key, column in input_columns.items():
+        if not column["is_sequence"]:
+            # keep canvas attributes
+            prediction[key] = inputs[key]
+        elif key not in masks.keys():
+            # demo only attributes
+            continue
+        elif column["type"] == "numerical":
+            cond = masks[key][..., tf.newaxis]
+            cond = tf.repeat(cond, tf.shape(prediction[key])[-1], axis=-1)
+            prediction[key] = tf.where(cond, prediction[key], inputs[key])
+        else:
+            gt = tf.one_hot(inputs[key], depth=column["input_dim"])
+            cond = masks[key][..., tf.newaxis, tf.newaxis]
+            cond = tf.repeat(cond, tf.shape(gt)[-2], axis=-2)
+            cond = tf.repeat(cond, tf.shape(gt)[-1], axis=-1)
+            prediction[key] = tf.where(cond, prediction[key], gt)
+
+    # copy unpredicted items for visualization
+    for key, column in input_columns.items():
+        if column.get("demo_only", False):
+            prediction[key] = inputs[key]
+    return prediction
+
+
+def preprocess_for_test(inputs, input_columns, masks, tasks=None):
+    seq_mask = get_seq_mask(inputs["length"])
+    filtered_inputs = filter_padding(inputs, input_columns, seq_mask)
+
+    modified_inputs = {}
+    for key, column in input_columns.items():
+        # don't mask variables defined for canvas
+        if not column["is_sequence"]:
+            modified_inputs[key] = filtered_inputs[key]
+            continue
+
+        modified_inputs[key] = apply_token(
+            filtered_inputs[key], column, masks[key], "masked"
+        )
+
+    if tasks is None:
+        # add dummy tensor
+        tasks = tf.zeros(tf.shape(inputs["left"])[0])
+    modified_inputs["task"] = tasks[..., tf.newaxis]
+
+    return modified_inputs
+
+
+def preprocess_for_train(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    tasks: tf.Tensor,
+    is_autoreg: bool = False,
+    input_dtype: str = "set",
+):
+    tf.debugging.assert_rank(tasks, 1)
+    attribute_groups = get_attribute_groups(input_columns.keys())
+
+    if is_autoreg or input_dtype == "shuffled_set":
+        inputs = shuffle_inputs(inputs)
+    elif input_dtype == "sorted_set":
+        inputs = sort_inputs(inputs, input_columns)
+
+    seq_mask = get_seq_mask(inputs["length"])
+    filtered_inputs = filter_padding(inputs, input_columns, seq_mask)
+
+    data = []
+    modified_inputs, masks = random_masking(filtered_inputs, input_columns, seq_mask)
+    data.append(elem_masking(filtered_inputs, input_columns, seq_mask, is_autoreg))
+    for attribute_group in attribute_groups.values():
+        x = feat_masking(filtered_inputs, input_columns, seq_mask, attribute_group)
+        data.append(x)
+
+    for key in modified_inputs.keys():
+        for i, (modified_inputs_tmp, masks_tmp) in enumerate(data):
+            # cond = (method_probs_onehot[:, i + 1] == 1.0)
+            cond = tasks == (i + 1)
+            if input_columns[key]["is_sequence"]:
+                cond = cond[..., tf.newaxis]
+
+            modified_inputs[key] = tf.where(
+                cond[..., tf.newaxis],
+                modified_inputs_tmp[key],
+                modified_inputs[key],
+            )
+
+            if input_columns[key]["is_sequence"]:
+                masks[key] = tf.where(cond, masks_tmp[key], masks[key])
+
+    # add task info.
+    modified_inputs["task"] = tasks[..., tf.newaxis]
+    return inputs, modified_inputs, masks
+
+
+def iterative_decode(model, masks, inputs, input_columns, modified_inputs, num_iter):
+    # MaskGIT-like decoding
+    # NOTE: not optimal implementation, could be faster
+    masks = masks.copy()
+    seq_mask = get_seq_mask(inputs["length"])
+    filtered_inputs = filter_padding(inputs, input_columns, seq_mask)
+    categorical_keys = [
+        k
+        for k, v in input_columns.items()
+        if v["is_sequence"] and v.get("type", None) == "categorical"
+    ]
+    num_masked = sum(masks[k].numpy().astype("int").sum(-1) for k in categorical_keys)
+    num_update_per_iter = (num_masked / num_iter).round().astype("int")
+    for i in range(num_iter):
+        # predict masked fields
+        outputs = model(modified_inputs, training=False)
+        if i == 0:
+            final_outputs = outputs
+
+        # use top-k confident prediction
+        confidence = {
+            k: tf.where(
+                masks[k],
+                tf.reduce_mean(
+                    tf.reduce_max(tf.nn.softmax(outputs[k], axis=-1), axis=-1),
+                    axis=-1,
+                ),  # mean(max_prob, -1); mean for "color" field
+                0.0,
+            )
+            for k in categorical_keys
+        }
+        confidence_sorted = tf.sort(
+            tf.concat([confidence[k] for k in categorical_keys], axis=-1),
+            axis=-1,
+            direction="DESCENDING",
+        )
+        threshold = tf.stack(
+            [confidence_sorted[i, k] for i, k in enumerate(num_update_per_iter)]
+        )
+
+        # update filtered_inputs and mask
+        for key in categorical_keys:
+            pred = tf.argmax(outputs[key], axis=-1, output_type=tf.int32)
+            update_field = (confidence[key] >= threshold) & (confidence[key] > 0)
+            filtered_inputs[key] = tf.where(
+                update_field[:, :, None], pred, filtered_inputs[key]
+            )
+            masks[key] = tf.where(masks[key] == update_field, False, masks[key])
+            if i > 0:
+                final_outputs[key] = tf.where(
+                    update_field[:, :, None, None],
+                    outputs[key],
+                    final_outputs[key],
+                )
+
+        # update model input
+        for key, column in input_columns.items():
+            if column["is_sequence"]:
+                modified_inputs[key] = apply_token(
+                    filtered_inputs[key], column, masks[key], "masked"
+                )
+
+    # use last prediction for numerical fields
+    for key in ["image_embedding", "text_embedding"]:
+        final_outputs[key] = outputs[key]
+
+    return final_outputs
+
+
+class MFP(tf.keras.Model):
+    """
+    MFP trainer.
+    """
+
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        masking_method: str = "random",
+        seq_type: str = "default",
+        arch_type: str = "oneshot",
+        context: Optional[str] = None,
+        input_dtype: str = "set",
+        name: str = "mfp",
+        use_elemwise_noise: bool = False,
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__(name=name)
+        assert arch_type == "oneshot"
+        self.arch_type = arch_type
+        self.context = context
+        self.input_dtype = input_dtype
+
+        self.input_columns = {
+            k: v for (k, v) in input_columns.items() if not v.get("demo_only", False)
+        }
+
+        self.is_autoreg = False if arch_type in ["oneshot", "canvasvae"] else True
+
+        if arch_type.endswith("vae") and "kl" in kwargs:
+            del kwargs["kl"]  # won't use it
+
+        if arch_type == "oneshot":
+            model_class = {
+                "default": Model,
+                "flat": VanillaTransformer,
+            }[seq_type]
+            self.model = model_class(
+                input_columns=input_columns,
+                num_blocks=num_blocks,
+                block_type=block_type,
+                context=context,
+                input_dtype=input_dtype,
+                use_elemwise_noise=use_elemwise_noise,
+                **kwargs,
+            )
+        elif "vae" in arch_type:
+            kl = kwargs.pop("kl") if "kl" in kwargs else 1.0
+            model_class = {
+                "layoutvae": LayoutVAE,
+                "canvasvae": CanvasVAE,
+            }[arch_type]
+
+            self.model = model_class(
+                input_columns=input_columns,
+                num_blocks=num_blocks,
+                block_type=block_type,
+                input_dtype=input_dtype,
+                kl=kl,
+                **kwargs,
+            )
+        elif "autoreg" in arch_type:
+            model_class = {
+                "autoreg": AutoReg,
+                "bart_autoreg": BART,
+            }[arch_type]
+            self.model = model_class(
+                input_columns=input_columns,
+                num_blocks=num_blocks,
+                block_type=block_type,
+                context=context,
+                input_dtype=input_dtype,
+                **kwargs,
+            )
+        else:
+            raise NotImplementedError
+
+        self.loss_layer = LossLayer(input_columns)
+
+        self.task_names = get_task_names(input_columns)
+        self.task_cat_dist = get_task_cat_dist_sampler(self.task_names, masking_method)
+        if get_dataset_name(input_columns.keys()) == "rico":
+            self.sort_pos = True
+        else:
+            self.sort_pos = False
+
+    def call(self, inputs, training=False, demo_args=None):
+        is_demo = True if demo_args else False
+        B = tf.shape(inputs["left"])[0]
+        tasks = self.task_cat_dist.sample(B)
+
+        if is_demo:
+            targets = inputs
+            masks = demo_args["masks"]
+            modified_inputs = preprocess_for_test(
+                inputs,
+                self.input_columns,
+                masks,
+                demo_args.get("tasks", tasks),
+            )
+        else:
+            targets, modified_inputs, masks = preprocess_for_train(
+                inputs,
+                self.input_columns,
+                tasks,
+                is_autoreg=self.is_autoreg,
+                input_dtype=self.input_dtype,
+            )
+
+        iter_decode = False
+        if is_demo:
+            num_iter = demo_args.get("num_iter", 1)
+            iter_decode = num_iter > 1
+
+        if iter_decode:
+            outputs = iterative_decode(
+                self.model, masks, inputs, self.input_columns, modified_inputs, num_iter
+            )
+        elif self.is_autoreg:
+            outputs = self.model(modified_inputs, targets, masks, training)
+        else:
+            outputs = self.model(modified_inputs, training)
+
+        if not is_demo:
+            if self.sort_pos:
+                ind = self.task_names.index("pos")
+                self.loss_layer((targets, outputs, masks), training, (tasks == ind))
+            else:
+                self.loss_layer((targets, outputs, masks), training)
+
+        outputs = merge_inputs_and_prediction(
+            inputs, self.input_columns, masks, outputs
+        )
+
+        outputs["tasks"] = tasks
+        return outputs
+
+
+===== discretizer.py =====
+import tensorflow as tf
+from tensorflow.keras.layers.experimental import preprocessing
+# from tensorflow.keras import preprocessing
+
+
+
+class SequenceDiscretizer(tf.keras.layers.Layer):
+    """
+    Discretization wrapper for stable operation under variable shapes.
+    """
+
+    def __init__(self, bins, **kwargs):
+        super().__init__(**kwargs)
+        self.discretizer = preprocessing.Discretization(bins)
+
+    def call(self, inputs):
+        if tf.__version__.startswith("2.3"):
+            # TF 2.3 behavior
+            return self.discretizer(inputs)
+        else:
+            # TF 2.4 or later has unstable discretization behavior.
+            inputs = tf.cast(inputs, tf.float32)
+            shape = tf.shape(inputs)
+            reshaped = tf.reshape(inputs, (-1, 1))
+            outputs = self.discretizer(reshaped)
+            return tf.reshape(outputs, shape)
+
+    @property
+    def bin_boundaries(self):
+        if tf.__version__.split(".")[1] in ("3", "4"):
+            return self.discretizer.bins
+        else:
+            return self.discretizer.bin_boundaries
+
+
+===== __main__.py =====
+if __name__ == "__main__":
+    from .main import main
+
+    main()
+
+
+===== crello-images-spec.yml =====
+name: crello-images
+columns:
+  image_hash:
+    is_sequence: true
+    dtype: string
+  image_embedding:
+    is_sequence: true
+    shape: [512]
+    dtype: float32
+
+
+===== svg_crello.py =====
+"""
+Original implementation directly parsing crawled data.
+"""
+
+import logging
+import math
+import os
+import pickle
+import xml.etree.ElementTree as ET
+from itertools import chain, groupby, repeat
+
+from mfp.data.crello import schema
+
+NS = {
+    "svg": "http://www.w3.org/2000/svg",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "xhtml": "http://www.w3.org/1999/xhtml",
+}
+ET.register_namespace("", NS["svg"])
+ET.register_namespace("xlink", NS["xlink"])
+ET.register_namespace("html", NS["xhtml"])
+
+logger = logging.getLogger(__name__)
+
+# DUMMY_TEXT = '''
+# Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
+# incididunt ut labore et dolore magna aliqua.
+# '''
+DUMMY_TEXT = """
+TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT TEXT
+"""
+
+PKL_DIR = f"{os.path.dirname(__file__)}/../../../../data/crello/pkls"
+
+
+def load_fonts_css(path: str):
+    """
+    Load font-family to stylesheet rules mapping.
+    Get css from
+    """
+    import tinycss
+
+    parser = tinycss.make_parser("fonts3")
+    stylesheet = parser.parse_stylesheet_file(path)
+    faces = [
+        {
+            decl.name: decl.value.as_css().replace("_old", "")
+            for decl in rule.declarations
+        }
+        for rule in stylesheet.rules
+    ]
+    return {
+        face: list(it) for face, it in groupby(faces, lambda x: x.get("font-family"))
+    }
+
+
+class SVGBuilder(object):
+    """
+    Utility to generate SVG for visualization.
+
+    Usage::
+
+        dataspec = DataSpec(...)
+        dataset = dataspec.make_dataset('val')
+        example = next(iter(dataset))
+
+        # Manual colormap.
+        builder = SVGBuilder(
+            'type',
+            colormap={
+                '': 'none',
+                'svgElement': 'blue',
+                'textElement': 'red',
+                'imageElement': 'green',
+                'maskElement': 'cyan',
+                'coloredBackground': 'magenta',
+                'videoElement': 'yellow',
+            },
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+        # Auto colormap by preprocessor.
+        builder = SVGBuilder(
+            'component',
+            preprocessor=dataspec.preprocessor,
+            max_width=144,
+        )
+        for item in dataspec.unbatch(example):
+            svg = builder(item)
+
+    """
+
+    def __init__(
+        self,
+        key=None,
+        preprocessor=None,
+        colormap=None,
+        canvas_width=None,
+        canvas_height=None,
+        max_width=None,
+        max_height=None,
+        opacity=0.5,
+        image_db=None,
+        text_db=None,
+        render_text=False,
+        **kwargs,
+    ):
+        assert key
+        self._key = key
+        self._canvas_width = canvas_width or 256
+        self._canvas_height = canvas_height or 256
+        self._max_width = max_width
+        self._max_height = max_height
+        self._opacity = opacity
+        self._render_text = render_text
+        assert preprocessor or colormap
+        if preprocessor is None or key == "color":
+            self._colormap = colormap
+        else:
+            vocabulary = preprocessor[key].get_vocabulary()
+            self._colormap = self._make_colormap(vocabulary, colormap)
+        self._image_db = image_db
+        self._text_db = text_db
+        self.fonts = load_fonts_css(
+            os.path.dirname(__file__) + "/../data/crello/fonts.css"
+        )
+
+    def __call__(self, document):
+        canvas_width, canvas_height = self.compute_canvas_size(document)
+        root = ET.Element(
+            ET.QName(NS["svg"], "svg"),
+            {
+                "width": str(canvas_width),
+                "height": str(canvas_height),
+                "viewBox": "0 0 1 1",
+                # 'style': 'background-color: #EEE',
+                "style": "background-color: #FFF",
+                "preserveAspectRatio": "none",
+            },
+        )
+
+        doc_size = {
+            "width": document["canvas_width"],
+            "height": document["canvas_height"],
+        }
+
+        # # load pickled data
+        id_ = document["id"].decode()
+        pkl_file = f"{PKL_DIR}/{id_[:3]}/{id_}.pkl"
+        with open(pkl_file, "rb") as f:
+            pkl_data = pickle.load(f)
+        pkl_elements = pkl_data.template[0].elements
+        pkl_uuids = [e.uuid for e in pkl_elements]
+
+        if len(pkl_elements) != len(document["elements"]):
+            plen = len(pkl_elements)
+            elen = len(document["elements"])
+            logger.warning(f"#elements mismatch {plen},{elen} for pkl, tfr")
+
+        # find one-to-one correspondense
+        doc2pkl = {}
+        for i, element in enumerate(document["elements"]):
+            uuid_ = element["uuid"].decode()
+            try:
+                doc2pkl[i] = pkl_uuids.index(uuid_)
+            except ValueError:
+                logger.warning(f"Not found: {uuid_}")
+
+        for i, element in enumerate(document["elements"]):
+            if i not in doc2pkl:  # with very low prob. it cannot be found
+                continue
+            if self._key == "color":
+                fill = "rgb(%g,%g,%g)" % tuple(map(int, element["color"]))
+            else:
+                fill = self._colormap.get(element[self._key], "none")
+
+            image_url = ""
+            if self._image_db:
+                if (
+                    element.get(self._image_db.condition["key"])
+                    in self._image_db.condition["values"]
+                ):
+                    image_url = self._image_db.search(element[self._image_db.value])
+
+            if self._text_db:
+                if (
+                    element.get(self._text_db.condition["key"])
+                    in self._text_db.condition["values"]
+                ):
+                    text = self._text_db.search(element[self._text_db.value])
+                else:
+                    text = DUMMY_TEXT
+            else:
+                text = DUMMY_TEXT
+
+            if image_url:
+                node = self._make_image(root, element, image_url)
+            elif self._render_text and element.get("type") == "textElement":
+                node = self._make_text_element(
+                    root,
+                    element,
+                    fill,
+                    doc_size,
+                    text,
+                    pkl_elements[doc2pkl[i]],
+                )
+            else:
+                node = self._make_rect(root, element, fill)
+
+            title = ET.SubElement(node, ET.QName(NS["svg"], "title"))
+            title.text = str(
+                {
+                    k: v
+                    for k, v in element.items()
+                    # if not (self._image_db and k == self._image_db.value)
+                    # to filter out large array like image/text_embedding
+                    if not isinstance(v, list)
+                }
+            )
+
+        # get links for fonts
+        style = ET.SubElement(root, "{%s}style" % NS["svg"])
+        self._fill_stylesheet(root, style)
+
+        return ET.tostring(root).decode("utf-8")
+
+    def _fill_stylesheet(self, root, style):
+        font_families = {
+            text.get("font-family")
+            for text in root.iter("{%s}text" % NS["svg"])
+            if text.get("font-family") is not None
+        }
+        style.text = "\n".join(
+            "@font-face { %s }" % " ".join("%s: %s;" % (key, item[key]) for key in item)
+            for item in chain.from_iterable(
+                self.fonts.get(family, []) for family in font_families
+            )
+        )
+
+    def compute_canvas_size(self, document):
+        canvas_width = document.get("canvas_width", self._canvas_width)
+        canvas_height = document.get("canvas_height", self._canvas_height)
+        scale = 1.0
+        if self._max_width is not None:
+            scale = min(self._max_width / canvas_width, scale)
+        if self._max_height is not None:
+            scale = min(self._max_height / canvas_height, scale)
+        return canvas_width * scale, canvas_height * scale
+
+    def _make_colormap(self, vocabulary, colormap=None):
+        """
+        Generate a colormap for the specified vocabulary list.
+        """
+        from matplotlib import cm
+
+        vocab_size = len(vocabulary)
+        cmap = cm.get_cmap(colormap or "tab20", vocab_size)
+        return {
+            label: "rgb(%g,%g,%g)" % tuple(int(x * 255) for x in c[:3])
+            for label, c in zip(vocabulary, cmap(range(vocab_size)))
+        }
+
+    def _make_text_element(
+        self, parent, element, fill, doc_size, text_str, pkl_element
+    ):
+        def _make_map(m, default_key=None):
+            return chain.from_iterable(
+                repeat(
+                    (x.get("type", default_key), x["value"]),
+                    x["endIndex"] - x["startIndex"],
+                )
+                for x in m
+            )
+
+        def _generate_spans(text, style_map):
+            offset = 0
+            for style, it in groupby(style_map):
+                length = len(list(it)) + 1
+                item = dict(style)
+                item["text"] = text[offset : offset + length]
+                yield item
+                offset += length
+
+        def _make_linespans(text, pkl_element):
+            style_map = list(
+                zip(
+                    _make_map(pkl_element.colorMap, default_key="color"),
+                    _make_map(pkl_element.boldMap, default_key="bold"),
+                    _make_map(pkl_element.italicMap, default_key="italic"),
+                )
+            )
+            br_inds = [i for (i, t) in enumerate(text) if t == "\n"]
+
+            if pkl_element.lineMap is not None:
+                default_line_map = []
+            elif len(br_inds) == 0:
+                default_line_map = [
+                    {"startIndex": 0, "endIndex": len(pkl_element.text)}
+                ]
+            else:
+                default_line_map = []
+                start = 0
+                for ind in br_inds:
+                    default_line_map.append({"startIndex": start, "endIndex": ind - 1})
+                    start = ind + 1
+                default_line_map.append(
+                    {"startIndex": start, "endIndex": len(text) - 1}
+                )
+
+            for line in pkl_element.lineMap or default_line_map:
+                start = line["startIndex"]
+                end = line["endIndex"] + 1
+
+                line_text = text[start:end]
+                line_style_map = style_map[start:end]
+                yield _generate_spans(line_text, line_style_map)
+
+        margin = element["height"] * 0.1  # To avoid unexpected clipping.
+        container = ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "svg"),
+            {
+                "id": element["uuid"].decode(),
+                "class": element["type"],
+                "x": "%g" % (element["left"] or 0),
+                "y": "%g" % ((element["top"] or 0) - margin),
+                "width": "%g" % (element["width"]),
+                "overflow": "visible",
+            },
+        )
+        opacity = element.get("opacity", 1.0)
+        if opacity < 1:
+            container.set("opacity", "%g" % opacity)
+
+        # in element filling, different type might be used
+        # in that case, we should somehow feed default values
+        font_size = (
+            getattr(pkl_element, "fontSize", doc_size["height"]) / doc_size["height"]
+        )
+        text_align = getattr(pkl_element, "textAlign", "center")
+        line_height = getattr(pkl_element, "lineHeight", 1.0)
+        capitalize = getattr(pkl_element, "capitalize", False)
+        underline = getattr(pkl_element, "underline", False)
+        letter_spacing = getattr(pkl_element, "letterSpacing", doc_size["width"])
+        if letter_spacing is None:
+            letter_spacing = 0.0
+        else:
+            letter_spacing /= doc_size["width"]
+
+        if not getattr(pkl_element, "lineMap", False):
+            setattr(pkl_element, "lineMap", None)
+        if not getattr(pkl_element, "colorMap", False):
+            setattr(pkl_element, "colorMap", [])
+        if not getattr(pkl_element, "boldMap", False):
+            setattr(pkl_element, "boldMap", [])
+        if not getattr(pkl_element, "italicMap", False):
+            setattr(pkl_element, "italicMap", [])
+        if not getattr(pkl_element, "text", False):
+            setattr(pkl_element, "text", "a" * 1000)
+
+        text = ET.SubElement(
+            container,
+            "{%s}text" % NS["svg"],
+            {
+                "font-size": "%g" % font_size,
+                "font-family": element["font_family"],
+                "letter-spacing": "%g" % letter_spacing,
+            },
+        )
+
+        if underline:
+            text.set("text-decoration", "underline")
+        if pkl_element.angle is not None and pkl_element.angle != 0:
+            # Note: Chromium clips the svg region.
+            angle = 180 * (pkl_element.angle / math.pi)
+            text.set(
+                "transform",
+                "rotate(%g, %g, %g)"
+                % (angle, element["width"] / 2, element["height"] / 2),
+            )
+        x = {"left": "0", "center": "50%", "right": "100%"}[text_align]
+        anchor = {"left": "start", "center": "middle", "right": "end"}[text_align]
+
+        line_height = line_height * font_size
+
+        # print('L343', fill)
+        for index, line in enumerate(_make_linespans(text_str, pkl_element)):
+            line_tspan = ET.SubElement(
+                text,
+                "{%s}tspan" % NS["svg"],
+                {
+                    "dy": "%g" % line_height,
+                    "x": x,
+                    "text-anchor": anchor,
+                    "dominant-baseline": "central",
+                },
+            )
+            if index == 0:
+                text.set("y", "%g" % (margin))
+                line_tspan.set("dy", "%g" % (line_height / 2))
+            for span in line:
+
+                def f(x):
+                    # convert 'rgb(255,255,255)' to 'FFFFFF'
+                    values = [
+                        "{:02x}".format(int(s)).upper() for s in x[4:-1].split(",")
+                    ]
+                    return "".join(values)
+
+                color = f(fill)
+
+                # print('L359', span['color'])
+                tspan = ET.SubElement(
+                    line_tspan,
+                    "{%s}tspan" % NS["svg"],
+                    {
+                        # 'fill': '#%s' % span['color'],
+                        "fill": "#%s" % color,
+                        "dominant-baseline": "central",
+                    },
+                )
+                tspan.text = span["text"].strip()
+                if span["bold"]:
+                    tspan.set("font-weight", "bold")
+                if span["italic"]:
+                    tspan.set("font-style", "italic")
+                if capitalize:
+                    # Capitalize at the leaf span for Safari compatibility.
+                    tspan.set("style", "text-transform: uppercase;")
+
+        return container
+
+    def _make_image(self, parent, element, image_url):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "image"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                ET.QName(NS["xlink"], "href"): image_url,
+                "opacity": str(element.get("opacity", 1.0)),
+                "preserveAspectRatio": "none",
+            },
+        )
+
+    def _make_rect(self, parent, element, fill):
+        return ET.SubElement(
+            parent,
+            ET.QName(NS["svg"], "rect"),
+            {
+                "x": str(element["left"]),
+                "y": str(element["top"]),
+                "width": str(element["width"]),
+                "height": str(element["height"]),
+                "fill": str(fill),
+                "opacity": str(element.get("opacity", 1.0) * self._opacity),
+            },
+        )
+
+
+===== rico-spec.yml =====
+name: rico
+columns:
+  length:
+    dtype: int64
+    lookup:
+      vocabulary:
+        min: 1
+        max: 50
+      num_oov_indices: 0
+      mask_value: null
+  left:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  top:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  width:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  height:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  clickable:
+    is_sequence: true
+    dtype: int64
+    max: 1
+  type:
+    is_sequence: true
+    dtype: string
+    lookup:
+      num_oov_indices: 1
+      mask_token: null
+    primary_label:
+      default: ''
+  icon:
+    is_sequence: true
+    dtype: string
+    min_freq: 500
+    lookup:
+      num_oov_indices: 1
+      mask_token: null
+  text_button:
+    is_sequence: true
+    dtype: string
+    min_freq: 500
+    lookup:
+      num_oov_indices: 1
+      mask_token: null
+
+
+===== encoder.py =====
+from typing import Dict, Union
+
+import tensorflow as tf
+from einops import rearrange
+from mfp.data.spec import get_valid_input_columns
+from mfp.models.architecture.mask import get_seq_mask
+from mfp.models.architecture.transformer import PositionEmbedding
+from mfp.models.architecture.utils import make_dense_options, make_emb_options
+from mfp.models.masking import MASK_VALUE, NULL_VALUE, get_task_names
+
+CONTEXT_NAMES = [None, "id", "canvas", "length", "canvas_add"]
+
+
+class Encoder(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        context: Union[str, None] = None,
+        input_dtype: str = "set",
+        use_elemwise_noise: bool = False,
+        fusion: str = "add",
+        latent_dim: int = 128,
+        dropout: float = 0.1,
+        l2: float = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        assert context in CONTEXT_NAMES
+        # canvas_add: for CTX experiments, add canvas info. to each element in seq.
+
+        self.input_columns = input_columns
+
+        # to encode and aggregate canvas-level attributes
+        self.use_canvas = context is not None and "canvas" in context
+        self.use_elemwise_noise = use_elemwise_noise
+        self.valid_input_columns = get_valid_input_columns(
+            input_columns, self.use_canvas
+        )
+
+        self.context = context
+        self.use_pos_token = True if input_dtype != "set" else False
+        self.fusion = fusion
+        self.latent_dim = latent_dim
+
+        self.input_layer = {}
+
+        # for shuffled sets or sequence
+        if self.use_pos_token:
+            self.input_layer["const"] = PositionEmbedding(
+                latent_dim,
+                self.input_columns["length"]["input_dim"],
+                dropout=dropout,
+                emb_options=make_emb_options(l2),
+                name="input_const",
+            )
+
+        if self.use_elemwise_noise:
+            self.noise_size = 4
+            self.input_layer["noise_fc"] = tf.keras.layers.Dense(
+                units=latent_dim,
+                name="input_noise",
+                **make_dense_options(l2),
+            )
+
+        # for global context features
+        # initialize <CLS> token
+        # w_init = tf.zeros_initializer()(
+        #     shape=[1, 1, latent_dim], dtype=tf.float32
+        # )
+        # self.cls_token[key] = tf.Variable(initial_value=w_init, trainable=True)
+
+        for key, column in self.valid_input_columns.items():
+            if column["type"] == "categorical":
+                self.input_layer[key] = tf.keras.layers.Embedding(
+                    input_dim=column["input_dim"] + 2,
+                    output_dim=latent_dim,
+                    name="input_%s" % key,
+                    **make_emb_options(l2),
+                )
+            elif column["type"] == "numerical":
+                # used to embed <MASK> and <UNUSED> token
+                self.input_layer["%s_special" % key] = tf.keras.layers.Embedding(
+                    input_dim=2,
+                    output_dim=latent_dim,
+                    name="input_%s_special" % key,
+                    **make_emb_options(l2),
+                )
+                self.input_layer[key] = tf.keras.layers.Dense(
+                    units=latent_dim,
+                    name="input_%s" % key,
+                    **make_dense_options(l2),
+                )
+            else:
+                raise ValueError("Invalid column: %s" % column)
+
+        if self.context == "id":
+            task_len = len(get_task_names(input_columns))
+            self.input_layer["task"] = tf.keras.layers.Embedding(
+                input_dim=task_len,
+                output_dim=latent_dim,
+                name="input_task",
+                **make_emb_options(l2),
+            )
+        elif self.context == "length":
+            self.input_layer["length"] = tf.keras.layers.Embedding(
+                input_dim=input_columns["length"]["input_dim"],
+                output_dim=latent_dim,
+                name="input_task",
+                **make_emb_options(l2),
+            )
+
+        assert fusion in ["add", "concat", "flat", "none"]
+        if self.fusion == "concat":
+            self.fusion = tf.keras.layers.Sequential(
+                [
+                    tf.keras.layers.Dense(
+                        units=latent_dim,
+                        name="fusion_fc",
+                        **make_dense_options(l2),
+                    ),
+                    tf.keras.layers.LayerNormalization(),
+                    tf.keras.layers.Dropout(dropout),
+                ]
+            )
+        elif self.fusion == "flat":
+            valid_feats = self.valid_input_columns.keys()
+            maxlen = len(valid_feats)
+            maxlen *= self.input_columns["length"]["input_dim"] + 1
+            self.input_layer["emb_seq_pos"] = PositionEmbedding(
+                latent_dim,
+                self.input_columns["length"]["input_dim"] + 1,
+                dropout=dropout,
+                emb_options=make_emb_options(l2),
+                name="input_emb_elem",
+            )
+
+            # valid_feats = self.valid_input_columns.keys()
+            # self.input_layer["emb_feat"] = PositionEmbedding(
+            #     latent_dim,
+            #     len(valid_feats) + 1,
+            #     # len(valid_feats),
+            #     dropout=dropout,
+            #     emb_options=make_emb_options(l2),
+            #     name="input_emb_feat",
+            # )
+
+    def call(self, inputs: Dict, training: bool = False):
+        B = tf.shape(inputs["length"])[0]
+        # Sequence inputs.
+        # Note that length is zero-based
+        seq_mask = get_seq_mask(inputs["length"])
+
+        # aggregate info for both canvas and sequence
+        data_c, data_s, keys_c, keys_s = [], [], [], []
+        for key, column in self.valid_input_columns.items():
+            if column["type"] == "categorical":
+                x = self.input_layer[key](inputs[key])
+                # sum across multiple prediction targets (e.g., RGB)
+                axis = 2 if column["is_sequence"] else 1
+                x = tf.reduce_sum(x, axis=axis)
+            else:
+                # find vector corresponding to <MASK> and <UNUSED>,
+                # and then retrieve dense embedding for both
+                # see apply_token in mfp.models.masking
+                is_masked = tf.math.reduce_all(inputs[key] == MASK_VALUE, axis=2)
+                is_unused = tf.math.reduce_all(inputs[key] == NULL_VALUE, axis=2)
+                masked_emb = self.input_layer["%s_special" % key](
+                    tf.zeros(tf.shape(seq_mask))
+                )
+                unused_emb = self.input_layer["%s_special" % key](
+                    tf.ones(tf.shape(seq_mask))
+                )
+                x = self.input_layer[key](inputs[key])
+                x = tf.where(is_masked[..., tf.newaxis], masked_emb, x)
+                x = tf.where(is_unused[..., tf.newaxis], unused_emb, x)
+
+            # for global context features
+            # cls_token = tf.tile(self.cls_token[key], [batch, 1, 1])
+            # x = tf.concat([cls_token, x], axis=1)
+            if column["is_sequence"]:
+                data_s.append(x)
+                keys_s.append(key)
+            else:
+                data_c.append(x)
+                keys_c.append(key)
+
+        if self.use_canvas:
+            assert len(keys_c) > 0, (keys_s, keys_c)
+
+        if self.fusion != "add":
+            # did not implement unusual cases
+            assert len(data_c) == 0
+
+        if self.fusion == "add":
+            seq, canvas = 0.0, 0.0
+            for d in data_s:
+                seq += d
+            for d in data_c:
+                canvas += d
+        elif self.fusion == "flat":
+            shape = tf.shape(inputs["left"])
+
+            S = shape[1]
+            F = len(data_s)
+            D = self.latent_dim
+
+            seq_mask = tf.repeat(seq_mask, F, axis=1)  # (B, S * F)
+            seq = tf.concat([tf.expand_dims(d, axis=2) for d in data_s], axis=2)
+            seq = tf.reshape(seq, (B, -1, D))  # (B, S * F, D)
+
+            seq_ids = rearrange(tf.range(S * F), "s -> 1 s")
+            seq += self.input_layer["emb_seq_pos"](seq_ids)  # (B, S * F, D)
+
+            # elem_ids = (tf.range(S * F) // F)[:, tf.newaxis]  # (S * F, 1)
+            # elem_emb = self.input_layer["emb_elem"](elem_ids)  # (S * F, 1, D)
+            # elem_emb = tf.transpose(elem_emb, [1, 0, 2])  # (1, S * F, D)
+            # feat_ids = (tf.range(S * F) % F)[:, tf.newaxis]  # (S * F, 1)
+            # feat_emb = self.input_layer["emb_feat"](feat_ids)  # (S * F, 1, D)
+            # feat_emb = tf.transpose(feat_emb, [1, 0, 2])  # (1, S * F, D)
+            # seq = seq + elem_emb + feat_emb
+        elif self.fusion == "none":
+            seq = {}
+            for k, v in zip(keys_s, data_s):
+                seq[k] = v
+        else:
+            raise NotImplementedError
+
+        if self.context == "canvas_add":
+            canvas = rearrange(canvas, "b c -> b 1 c")
+            seq += canvas
+        elif self.context is not None:
+            assert self.fusion == "add", self.fusion
+            # add special token (currently including task information if available)
+            if self.context == "id":
+                task = inputs["task"]
+                task = task[:, 0] if tf.rank(task).numpy() == 2 else task
+                canvas = self.input_layer["task"](task)
+            elif self.context == "length":
+                length = inputs["length"]
+                if tf.rank(length) == 2:
+                    length = length[:, 0]
+                canvas = self.input_layer["length"](length)
+            elif self.context == "canvas":
+                pass
+            else:
+                raise NotImplementedError
+            canvas = rearrange(canvas, "b c -> b 1 c")
+            seq = tf.concat([canvas, seq], axis=1)
+            seq_mask = get_seq_mask(inputs["length"] + 1)
+
+        if self.use_pos_token and not self.fusion == "flat":
+            seq += self.input_layer["const"](seq_mask, training=training)
+
+        if self.use_elemwise_noise:
+            assert self.fusion == "add"
+            shape = seq.shape[:2] + (self.noise_size,)
+            noise = tf.random.normal(shape)
+            seq += self.input_layer["noise_fc"](noise)
+
+        if self.fusion == "none":
+            for v in seq.values():
+                tf.debugging.assert_rank(v, 3)
+        else:
+            tf.debugging.assert_rank(seq, 3)
+        return seq, seq_mask
+
+
+===== retrieve.py =====
+import logging
+from base64 import b64encode
+from pathlib import Path
+from typing import Any, Dict, Union
+
+import faiss
+import numpy as np
+import tensorflow as tf
+from mfp.data import DataSpec
+
+logger = logging.getLogger(__name__)
+
+
+class _Retriever(object):
+    """Image retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str,
+        value: str,
+        condition: Dict[str, Any] = None,
+        dim: int = 512,
+        # image_path=None,
+        # **kwargs,
+    ):
+        self._path = path
+        # self._dataspec = DataSpec("crello-images", path, **kwargs)
+        self._dataspec = None
+        self._key = key
+        self._value = value
+        self._condition = condition
+        self._dim = dim
+
+        #  or {
+        #     "key": "type",
+        #     "values": ("imageElement", "maskElement", "svgElement"),
+        # }
+        # self._image_path = image_path or os.path.join(self._path, "images")
+
+    @property
+    def key(self):
+        return self._key
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def condition(self):
+        return self._condition
+
+    def build(self, split="train"):
+        """Build index."""
+        logger.info("Fetching image embeddings...")
+        dataset = self._dataspec.make_dataset(split)
+
+        # Deduplicate entries.
+        d = {}
+        for batch in dataset:
+            keys = tf.reshape(batch[self._key], (-1, tf.shape(batch[self._key])[-1]))
+            values = tf.reshape(
+                batch[self._value], (-1, tf.shape(batch[self._value])[-1])
+            )
+            for i in range(tf.shape(keys)[0]):
+                d[keys[i, 0].numpy()] = values[i].numpy()
+
+        # Build faiss index.
+        logger.info("Building image index...")
+        labels = np.array(list(d.keys()))
+        data = np.stack(list(d.values()))
+        db = faiss.IndexFlatL2(self._dim)
+        db.add(data)
+
+        self._labels = labels
+        self._db = db
+
+    def get_url(self, index: int):
+        raise NotImplementedError
+
+    def search(self, query, k=1):
+        if not isinstance(query, np.ndarray):
+            query = np.array([query], dtype=np.float32)
+
+        _, index = self._db.search(query, k)
+        urls = [self.get_url(i) for i in index[0].tolist()]
+        if k == 1:
+            return urls[0]
+        return urls
+
+
+class ImageRetriever(_Retriever):
+    """Image retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str = "image_hash",
+        value: str = "image_embedding",
+        condition: Dict[str, Any] = None,
+        image_path: Path = None,
+        dim: int = 512,
+        **kwargs,
+    ):
+        super().__init__(path, key, value, condition, dim)
+        self._dataspec = DataSpec("crello-images", path, **kwargs)
+        if self._condition is None:
+            self._condition = {
+                "key": "type",
+                "values": ("imageElement", "maskElement", "svgElement"),
+            }
+        self._image_path = image_path or self._path / "images"
+
+    def get_url(self, index: int):
+        label = self._labels[index]
+        if label:
+            return make_data_uri(self._image_path / (label.decode() + ".png"))
+        return ""
+
+
+class TextRetriever(_Retriever):
+    """Text retriever for visualization."""
+
+    def __init__(
+        self,
+        path: Path,
+        key: str = "text_hash",
+        value: str = "text_embedding",
+        condition: Dict[str, Any] = None,
+        text_path: Path = None,
+        dim: int = 512,
+        **kwargs,
+    ):
+        super().__init__(path, key, value, condition, dim)
+        self._dataspec = DataSpec("crello-texts", path, **kwargs)
+        if self._condition is None:
+            self._condition = {
+                "key": "type",
+                "values": ("textElement",),
+            }
+        self._text_path = text_path or self._path / "texts"
+
+    def get_url(self, index: int):
+        label = self._labels[index]
+        if label:
+            url = self._text_path / (label.decode() + ".txt")
+            with tf.io.gfile.GFile(str(url), "rb") as f:
+                text = f.read()
+            return text.decode()
+        return ""
+
+
+def make_data_uri(url: Union[str, Path], mime_type="image/png"):
+    if isinstance(url, Path):
+        url = str(url)
+    with tf.io.gfile.GFile(url, "rb") as f:
+        image_bytes = f.read()
+    data = b64encode(image_bytes).decode("ascii")
+    return "data:%s;base64,%s" % (mime_type, data)
+
+===== rasterizer.py =====
+import math
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import List, Tuple
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+
+
+def get_svg_size(input_path: Path) -> Tuple[int, int]:
+    svg_root = ET.parse(input_path).getroot()
+    canvas_width = math.ceil(float(svg_root.get("width")))
+    canvas_height = math.ceil(float(svg_root.get("height")))
+    return (canvas_width, canvas_height)
+
+
+class Rasterizer:
+    def __init__(self):
+        options = Options()
+        options.add_argument("--headless")
+        options.add_argument("--hide-scrollbars")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        self.options = options
+
+    def __call__(self, svg_path: Path, svg_img_path: Path, size: List[int]):
+        assert len(size) == 2
+        url = f"file://{str(svg_path.absolute())}"  # need full path
+        driver = webdriver.Chrome(options=self.options)
+        driver.set_window_size(*size)
+        driver.get(url)
+        driver.get_screenshot_as_file(str(svg_img_path))
+        driver.quit()
+
+
+===== train.py =====
+import json
+import logging
+import os
+import random
+
+import numpy as np
+import tensorflow as tf
+from fsspec.core import url_to_fs
+from mfp.data import DataSpec
+from mfp.helpers.callbacks import get_callbacks
+from mfp.models.mfp import MFP
+
+logger = logging.getLogger(__name__)
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # 使用 GPU 0
+
+def train(args):
+    logger.info(f"tensorflow version {tf.__version__}")
+    # fix seeds for reproducibility and stable validation
+    seed = args.seed
+    tf.random.set_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    # strategy = tf.distribute.MirroredStrategy()
+    fs, _ = url_to_fs(args.job_dir)
+    if not fs.exists(args.job_dir):
+        fs.makedir(args.job_dir)
+
+    json_path = os.path.join(args.job_dir, "args.json")
+
+    with fs.open(json_path, "w") as file_obj:
+        json.dump(vars(args), file_obj, indent=2)
+    checkpoint_dir = os.path.join(args.job_dir, "checkpoints")
+    checkpoint_path = os.path.join(checkpoint_dir, "best.ckpt")
+
+    dataspec = DataSpec(
+        args.dataset_name,
+        args.data_dir,
+        batch_size=args.batch_size,
+    )
+
+    train_dataset = dataspec.make_dataset(
+        "train",
+        shuffle=True,
+        repeat=True,
+        cache=True,
+    )
+    val_dataset = dataspec.make_dataset("val", cache=True)
+    # val_dataset = dataspec.make_dataset("test", cache=True)
+
+    test_dataset = dataspec.make_dataset("test", cache=True)
+
+    input_columns = dataspec.make_input_columns()
+    model = MFP(
+        input_columns,
+        num_blocks=args.num_blocks,
+        block_type=args.block_type,
+        masking_method=args.masking_method,
+        seq_type=args.seq_type,
+        arch_type=args.arch_type,
+        context=args.context,
+        latent_dim=args.latent_dim,
+        dropout=args.dropout,
+        l2=args.l2,
+        input_dtype=args.input_dtype,
+    )
+
+    if args.weights:
+        logger.info("Loading %s" % args.weights)
+        model.load_weights(args.weights)
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(
+            learning_rate=args.learning_rate,
+            clipnorm=1.0,
+        ),
+        run_eagerly=True,
+    )
+
+    # model.compile(
+    # optimizer=tf.keras.optimizers.legacy.Adam(
+    #     learning_rate=args.learning_rate,
+    #     clipnorm=1.0,
+    # ),
+    # run_eagerly=True,
+    # )
+
+    model.fit(
+        train_dataset,
+        steps_per_epoch=dataspec.steps_per_epoch("train"),
+        epochs=args.num_epochs,
+        validation_data=val_dataset,
+        validation_steps=dataspec.steps_per_epoch("val"),
+        validation_freq=min(args.validation_freq, args.num_epochs),
+        callbacks=get_callbacks(args, dataspec, checkpoint_path),
+        verbose=args.verbose,
+    )
+
+    results = model.evaluate(test_dataset, batch_size=args.batch_size)
+    for k, v in zip(model.metrics_names, results):
+        print(k, v)
+
+    # Save the last model.
+    model_path = os.path.join(args.job_dir, "checkpoints", "final.ckpt")
+    logger.info("Saving %s" % model_path)
+    model.save_weights(model_path)
+
+
+===== component_legend.json =====
+{
+  "Web View": {
+    "rgb": [
+      66, 
+      166, 
+      246
+    ], 
+    "hex": "#42A5F5"
+  }, 
+  "List Item": {
+    "rgb": [
+      256, 
+      225, 
+      179
+    ], 
+    "hex": "#FFE0B2"
+  }, 
+  "Multi-Tab": {
+    "rgb": [
+      256, 
+      242, 
+      118
+    ], 
+    "hex": "#FFF176"
+  }, 
+  "Input": {
+    "rgb": [
+      145, 
+      203, 
+      250
+    ], 
+    "hex": "#90CAF9"
+  }, 
+  "Button": {
+    "rgb": [
+      206, 
+      221, 
+      57
+    ], 
+    "hex": "#CDDC39"
+  }, 
+  "Slider": {
+    "rgb": [
+      206, 
+      220, 
+      221
+    ], 
+    "hex": "#CDDBDC"
+  }, 
+  "Background Image": {
+    "rgb": [
+      211, 
+      20, 
+      83
+    ], 
+    "hex": "#D21453"
+  }, 
+  "Advertisement": {
+    "rgb": [
+      13, 
+      71, 
+      162
+    ], 
+    "hex": "#0D47A1"
+  }, 
+  "Card": {
+    "rgb": [
+      216, 
+      190, 
+      227
+    ], 
+    "hex": "#D7BDE2"
+  }, 
+  "Bottom Navigation": {
+    "rgb": [
+      187, 
+      104, 
+      201
+    ], 
+    "hex": "#BA68C8"
+  }, 
+  "Modal": {
+    "rgb": [
+      0, 
+      256, 
+      205
+    ], 
+    "hex": "#00FFCC"
+  }, 
+  "On/Off Switch": {
+    "rgb": [
+      79, 
+      196, 
+      248
+    ], 
+    "hex": "#4FC3F7"
+  }, 
+  "Button Bar": {
+    "rgb": [
+      256, 
+      206, 
+      211
+    ], 
+    "hex": "#FFCDD2"
+  }, 
+  "Number Stepper": {
+    "rgb": [
+      175, 
+      214, 
+      130
+    ], 
+    "hex": "#AED581"
+  }, 
+  "Text": {
+    "rgb": [
+      74, 
+      20, 
+      141
+    ], 
+    "hex": "#4A148C"
+  }, 
+  "Map View": {
+    "rgb": [
+      226, 
+      191, 
+      232
+    ], 
+    "hex": "#E1BEE7"
+  }, 
+  "Checkbox": {
+    "rgb": [
+      256, 
+      139, 
+      101
+    ], 
+    "hex": "#FF8A65"
+  }, 
+  "Date Picker": {
+    "rgb": [
+      205, 
+      102, 
+      154
+    ], 
+    "hex": "#CC6699"
+  }, 
+  "Image": {
+    "rgb": [
+      241, 
+      98, 
+      147
+    ], 
+    "hex": "#F06292"
+  }, 
+  "Drawer": {
+    "rgb": [
+      103, 
+      58, 
+      184
+    ], 
+    "hex": "#673AB7"
+  }, 
+  "Video": {
+    "rgb": [
+      0, 
+      205, 
+      0
+    ], 
+    "hex": "#00CC00"
+  }, 
+  "Toolbar": {
+    "rgb": [
+      77, 
+      209, 
+      226
+    ], 
+    "hex": "#4DD0E1"
+  }, 
+  "Pager Indicator": {
+    "rgb": [
+      249, 
+      188, 
+      209
+    ], 
+    "hex": "#F8BBD0"
+  }
+}
+
+===== callbacks.py =====
+import gc
+import logging
+import os
+from datetime import datetime, timezone
+
+import tensorflow as tf
+
+logger = logging.getLogger(__name__)
+
+class MetricLogger(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        if logs:
+            print(f"Epoch {epoch} metrics: {list(logs.keys())}")
+
+class HyperTune(tf.keras.callbacks.Callback):
+    """Callback for HyperTune on AI Platform."""
+
+    def __init__(self, metric, tag=None, logdir=None, **kwargs):
+        super().__init__(**kwargs)
+        self._metric = metric
+        self._tag = tag or "training/hptuning/metric"
+        self._logdir = logdir or "/tmp/hypertune/output.metrics"
+        self._writer = tf.summary.create_file_writer(self._logdir)
+
+    def on_epoch_end(self, epoch, logs=None):
+        if logs and self._metric in logs:
+            with self._writer.as_default():
+                tf.summary.scalar(self._tag, logs[self._metric], step=epoch)
+            now = datetime.now(timezone.utc).astimezone().isoformat()
+            print(f"{now} {self._tag} = {logs['val_loss']}")
+
+
+class GarbageCollector(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        gc.collect()
+        tf.keras.backend.clear_session()
+
+
+def get_callbacks(args, dataspec, checkpoint_path: str):
+    log_dir = os.path.join(args.job_dir, "logs")
+    if tf.io.gfile.exists(log_dir):
+        logger.warning("Overwriting log dir: %s" % log_dir)
+        tf.io.gfile.rmtree(log_dir)
+
+    logger.info(f"checkpoint_path={checkpoint_path}")
+    logger.info(f"log_dir={log_dir}")
+
+    tensorboard = tf.keras.callbacks.TensorBoard(
+        log_dir=log_dir,
+        write_graph=False,
+        profile_batch=2 if args.enable_profile else 0,
+    )
+    # checkpoint = tf.keras.callbacks.ModelCheckpoint(
+    #     checkpoint_path,
+    #     save_weights_only=True,
+    #     monitor="val_total_score",
+    #     mode="max",
+    #     save_best_only=True,
+    #     verbose=1,
+    # )
+    checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        checkpoint_path,
+        save_weights_only=True,
+        monitor="val_loss",  # 改为 val_loss 或其他实际存在的指标
+        mode="min",          # 如果是损失，改为 min
+        save_best_only=True,
+        verbose=1,
+    )
+
+    terminate_on_nan = tf.keras.callbacks.TerminateOnNaN()
+    gc = GarbageCollector()
+    callbacks_list = [tensorboard, checkpoint, terminate_on_nan, gc]
+    return callbacks_list
+
+
+===== datatest.py =====
+
+from spec import DataSpec
+
+
+dataspec = DataSpec('crello', '/home/usr/dell/Project-HCL/BaseLine/flex-dm/data/crello', batch_size=16)
+
+# dataspec = DataSpec('dataforfd', '/storage/homes/hzj/hzj/Project-HCL/BaseLine/flex-dm/data/DataForFlexDm/tfrecords_output_v5', batch_size=16)
+
+
+train_dataset = dataspec.make_dataset(
+    'train', shuffle=True, cache=True)
+
+
+for _ in range(10):
+    batch = next(iter(train_dataset))
+
+        # Print sample
+    print("\nSample data:")
+    for item in dataspec.unbatch(batch):
+        print(f"Sample ID: {item['id']}")
+        print(f"Canvas: {item['canvas_width']}x{item['canvas_height']}")
+        print(f"Elements: {len(item['elements'])}")
+        for i, elem in enumerate(item['elements'][:3]):  # Show first 3 elements
+            print(f"  Element {i}: {elem['type']} at ({elem['left']:.3f}, {elem['top']:.3f})")
+            print(f"    Size: {elem['width']:.3f} x {elem['height']:.3f}")
+        if len(item['elements']) > 3:
+            print(f"  ... and {len(item['elements']) - 3} more elements")
+        break
+
+
+
+# for item in dataspec.unbatch(batch):
+#     print(item)
+
+===== canvasvae.py =====
+from typing import Dict, Optional
+
+import tensorflow as tf
+import tensorflow_probability as tfp
+from einops import rearrange
+from mfp.data.spec import get_valid_input_columns
+from mfp.models.architecture.cvae import Head
+from mfp.models.architecture.decoder import Decoder
+from mfp.models.architecture.encoder import Encoder
+from mfp.models.architecture.mask import Unmask, get_seq_mask
+from mfp.models.architecture.transformer import Blocks, PositionEmbedding
+from mfp.models.architecture.utils import make_dense_options, make_emb_options
+
+MND = tfp.distributions.MultivariateNormalDiag
+
+
+class CanvasVAE(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        input_columns: Dict,
+        num_blocks: int = 4,
+        block_type: str = "deepsvg",
+        context: Optional[str] = "length",
+        input_dtype: str = "set",
+        kl: float = 1e-0,
+        **kwargs,  # keys are latent_dim, dropout, l2
+    ):
+        super().__init__()
+        assert context == "length"
+        assert input_dtype == "sorted_set"
+
+        # assert "l2" in kwargs and "latent_dim" in kwargs
+        l2 = kwargs.get("l2", None)
+        dropout = kwargs.get("dropout", 0.0)
+
+        self.kl = kl
+        self.input_columns = input_columns
+        self.valid_input_columns = get_valid_input_columns(input_columns, False)
+
+        self.encoder = Encoder(
+            input_columns, context=context, input_dtype=input_dtype, **kwargs
+        )
+        self.decoder = Decoder(input_columns, **kwargs)
+
+        self.enc_blocks = Blocks(
+            num_blocks=num_blocks // 2,
+            block_type=block_type,
+            lookahead=True,
+            conditional=True,
+            **kwargs,
+        )
+        self.prior_head = Head(**kwargs, compute_kl=True)
+        self.norm = tf.keras.layers.BatchNormalization()
+        self.relu = tf.keras.layers.Activation("relu")
+        self.pooling = tf.keras.layers.GlobalAveragePooling1D()
+        self.unmask = Unmask()
+
+        self.blocks = Blocks(
+            num_blocks=num_blocks // 2,
+            block_type=block_type,
+            lookahead=True,
+            conditional=True,
+            **kwargs,
+        )
+        self.length_fc = tf.keras.layers.Dense(
+            input_columns["length"]["input_dim"], **make_dense_options(l2)
+        )
+        self.length_loss_func = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True,
+        )
+
+        self.embedding_const = PositionEmbedding(
+            kwargs["latent_dim"],
+            self.input_columns["length"]["input_dim"],
+            dropout=dropout,
+            emb_options=make_emb_options(l2),
+            name="embedding_const",
+        )
+
+    def call(
+        self,
+        inputs: Dict,
+        training: bool,
+    ):
+        # note that the element in seq. is for canvas attributes
+        h_masked, enc_mask = self.encoder(inputs, training=training)
+        canvas = h_masked[:, 0]
+        sequence = h_masked[:, 1:]
+        enc_mask = enc_mask[:, 1:]
+        B = enc_mask.shape[0]
+        h = self.enc_blocks((sequence, canvas), enc_mask, training=training)
+
+        # aggregate latent codes and sample
+        pooled = self.norm(sequence, training=training)
+        pooled = self.pooling(self.relu(pooled))  # (B, S, D) -> (B, D)
+        pooled = self.unmask(pooled)
+        z = self.prior_head(pooled, training=training)["z"]
+
+        # get the length of sequence at first
+        if training:
+            length_logits = self.length_fc(z)
+            length_loss = self.length_loss_func(inputs["length"], length_logits)
+            self.add_loss(length_loss)
+            self.add_metric(length_loss, name="length_loss")
+
+            # At training, use the supplied GT mask.
+            mask = get_seq_mask(inputs["length"])
+        else:
+            length_pred = tf.argmax(self.length_fc(z), axis=1)
+            maxlen = tf.reduce_max(inputs["length"]) + 1
+            mask = get_seq_mask(rearrange(length_pred, "b -> b 1"), maxlen=maxlen)
+
+        sequence = self.embedding_const(mask, training=training)
+        h = self.blocks((sequence, z), mask, training=training)
+        outputs = self.decoder(h, training=training)
+        return outputs
+
+
+===== decoder.py =====
+from typing import Dict, Union
+
+import tensorflow as tf
+from mfp.data.spec import get_valid_input_columns
+from mfp.models.architecture.mask import get_seq_mask
+from mfp.models.architecture.utils import make_dense_options
+
+
+class Decoder(tf.keras.layers.Layer):
+    """Multi-way head for decoders."""
+
+    def __init__(
+        self,
+        input_columns: Dict,
+        context: Union[str, None] = None,
+        detachment: str = "default",
+        latent_dim: int = 256,
+        dropout: float = 0.1,
+        l2: float = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.input_columns = input_columns
+        self.context = context
+        self.use_canvas = context == "canvas"
+        self.detachment = detachment
+        self.latent_dim = latent_dim
+        self.valid_input_columns = get_valid_input_columns(
+            input_columns, self.use_canvas
+        )
+
+        self.decoders = {}
+        for key, column in self.valid_input_columns.items():
+            if column["type"] == "categorical":
+                units = column["shape"][-1] * column["input_dim"]
+            else:
+                units = column["shape"][-1]
+
+            self.decoders[key] = tf.keras.layers.Dense(
+                units,
+                name="decoder_%s" % key,
+                **make_dense_options(l2),
+            )
+
+        # def compute_mask(self, z, mask=None):
+        #     """Compute mask according to Keras specification."""
+        #     if isinstance(z, tuple):
+        #         _, z = z
+        #         seq_mask = get_seq_mask(inputs['length'])
+        #     else:
+        #         seq_mask = self.predict_mask(z)
+        #     tf.debugging.assert_rank(seq_mask, 2)
+
+        #     outputs = {}
+        #     for key, column in self.input_columns.items():
+        #         if column['is_sequence']:
+        #             outputs[key] = seq_mask
+        #         else:
+        #             outputs[key] = None
+        #     return outputs
+
+        assert detachment in ["default", "flat", "none"]
+        if self.context is not None:
+            assert detachment == "default"
+        if self.detachment == "flat":
+            self.valid_keys = self.valid_input_columns.keys()
+
+    def predict_mask(self, z):
+        length_logit = self.decoders["length"](z)
+        return get_seq_mask(length_logit, from_logits=True)
+
+    def call(self, inputs: tf.Tensor, training: bool = False):
+        """Take a sequence of transformed embeddings and compute outputs."""
+        if self.context in ["id", "length", "canvas"]:
+            canvas = inputs[:, :1]  # for global tasks (e.g., classification)
+            seq = inputs[:, 1:]
+        else:
+            seq = inputs
+
+        if self.use_canvas:
+            # raise NotImplementedError
+            pass
+
+        if self.detachment == "flat":
+            keys = self.valid_keys
+            B = tf.shape(seq)[0]
+            seq = tf.reshape(seq, (B, -1, len(keys), self.latent_dim))
+            seq = tf.split(seq, len(keys), axis=2)
+            seq = {k: tf.squeeze(v, axis=2) for (k, v) in zip(keys, seq)}
+        elif self.detachment == "none":
+            B = tf.shape(inputs["left"])[0]
+        else:
+            B = tf.shape(seq)[0]
+
+        # Predict output for each head.
+        outputs = {}
+        for key, column in self.valid_input_columns.items():
+            if column["type"] == "categorical":
+                shape = (column["shape"][-1], column["input_dim"])
+            else:
+                shape = (column["shape"][-1],)
+
+            if column["is_sequence"]:
+                input_ = seq if self.detachment == "default" else seq[key]
+                outputs[key] = tf.reshape(self.decoders[key](input_), (B, -1) + shape)
+                tf.debugging.assert_rank_at_least(outputs[key], 3)
+            else:
+                input_ = canvas
+                outputs[key] = tf.reshape(self.decoders[key](input_), (B,) + shape)
+                tf.debugging.assert_rank_at_least(outputs[key], 2)
+        return outputs
+
+
+===== masking.py =====
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import tensorflow as tf
+import tensorflow_probability as tfp
+from mfp.data.spec import get_attribute_groups
+
+MASK_VALUE = 10.0
+NULL_VALUE = 0.0
+
+MASK_PROB = 0.15
+REPLACE_PROB = 0.1
+UNCHANGE_PROB = 0.1
+CHANGE_PROB = 1.0 - UNCHANGE_PROB
+THRESH = REPLACE_PROB / CHANGE_PROB
+
+
+def get_task_names(input_columns):
+    task_names = ["random", "elem"]
+    task_names += list(get_attribute_groups(input_columns.keys()).keys())
+    return task_names
+
+
+def filter_padding(
+    inputs: Dict[str, tf.Tensor], input_columns: Dict, mask: tf.Tensor
+) -> Dict[str, tf.Tensor]:
+    modified_inputs = {}
+
+    # to set [NULL] for padding caused by making minibatch
+    # from variable-length elements
+    unused_mask = tf.logical_not(mask)
+
+    for key, column in input_columns.items():
+        input_ = inputs[key]
+        if column["is_sequence"]:
+            # to set [NULL] for invalid data
+            # (e.g., TextElement does not have image_embedding)
+            if "loss_condition" in column:
+                cond = column["loss_condition"]
+                mask_ = tf.fill(tf.shape(mask), False)
+                for i, flag in enumerate(cond["mask"]):
+                    if not flag:
+                        mask_ = tf.math.logical_or(
+                            mask_, (inputs[cond["key"]] == i)[..., 0]
+                        )
+                mask_ = tf.logical_or(mask_, unused_mask)
+            else:
+                mask_ = unused_mask
+            modified_inputs[key] = apply_token(input_, column, mask_, "unused")
+        else:
+            modified_inputs[key] = input_
+
+    return modified_inputs
+
+
+def get_initial_masks(input_columns: Dict, mask: tf.Tensor) -> Dict[str, tf.Tensor]:
+    # returning masks with all False
+    masks = {}
+    for key, column in input_columns.items():
+        # don't mask variables defined for canvas
+        if not column["is_sequence"]:
+            masks[key] = tf.fill(tf.shape(mask)[:1], True)
+        else:
+            masks[key] = tf.fill(tf.shape(mask), False)
+    return masks
+
+
+def apply_token(
+    input_: tf.Tensor, column: Dict[str, Any], mask: tf.Tensor, token_type: str
+) -> tf.Tensor:
+
+    # MASK_VALUE = 10.0
+    # NULL_VALUE = 0.0
+
+    assert token_type in ["masked", "unused", "random"]
+    tf.debugging.assert_equal(tf.rank(mask), 2)
+    tf.debugging.assert_equal(tf.rank(input_), 3)
+
+    mask = mask[..., tf.newaxis]
+    shape = tf.shape(input_)
+
+    if column["type"] == "categorical":
+        x = tf.cast(mask, dtype=tf.int32)
+        data = {
+            "masked": column["input_dim"],
+            "unused": column["input_dim"] + 1,
+            "random": tf.random.uniform(shape, 0, column["input_dim"], dtype=tf.int32),
+        }
+        output = input_ * (1 - x) + data[token_type] * x
+    else:
+        x = tf.cast(mask, dtype=tf.float32)
+        data = {
+            "masked": MASK_VALUE,
+            "unused": NULL_VALUE,
+            "random": tf.random.normal(shape, stddev=0.1),
+        }
+        output = input_ * (1.0 - x) + data[token_type] * x
+
+    return output
+
+
+def select_single_element(mask: tf.Tensor, select_last: bool = False) -> tf.Tensor:
+    """
+    Select a single element for each sample.
+    If mask is all False, then return an array filled with False
+    For autoregressive models, always return the last valid element
+    """
+    tf.debugging.assert_rank(mask, 2)  # (B, S)
+
+    length = tf.cast(tf.reduce_sum(tf.cast(mask, tf.int64), axis=1), tf.float32)
+    if select_last:
+        arr = tf.cast(length - 1, tf.int32)
+    else:
+        arr = tf.cast(tf.random.uniform(tf.shape(mask)[:1]) * length, tf.int32)
+    new_mask = tf.cast(tf.one_hot(arr, depth=tf.shape(mask)[1]), tf.bool)
+    new_mask = new_mask & (length > 0.0)[:, tf.newaxis]
+    return new_mask
+
+
+def feat_masking(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    mask: tf.Tensor,
+    feat_group: List[str],
+) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+    modified_inputs = {}
+    for key in inputs.keys():
+        modified_inputs[key] = tf.identity(inputs[key])
+
+    masks = get_initial_masks(input_columns, mask)
+
+    for key in feat_group:
+        column = input_columns[key]
+        modified_inputs[key] = apply_token(modified_inputs[key], column, mask, "masked")
+        masks[key] = mask
+
+    return modified_inputs, masks
+
+
+def elem_masking(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    mask: tf.Tensor,
+    is_autoreg: bool = False,
+) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+    # modifing a specific element of all the features in a sequence
+    masks = get_initial_masks(input_columns, mask)
+    selected_mask = select_single_element(mask, is_autoreg)
+
+    modified_inputs = {}
+    for key, column in input_columns.items():
+        if not column["is_sequence"]:
+            modified_inputs[key] = inputs[key]
+        else:
+            modified_inputs[key] = apply_token(
+                inputs[key], column, selected_mask, "masked"
+            )
+            masks[key] = selected_mask
+    return modified_inputs, masks
+
+
+def unused_masking(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    masks: Dict[str, tf.Tensor],
+    drop_ratio: float = 0.1,
+) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+    dist = tfp.distributions.Bernoulli(probs=drop_ratio)
+
+    modified_inputs = {}
+    modified_masks = {}
+    for key, column in input_columns.items():
+        if not column["is_sequence"]:
+            modified_masks[key] = masks[key]
+            modified_inputs[key] = inputs[key]
+            continue
+
+        is_masked = masks[key]  # (B, S)
+        is_unused = tf.cast(dist.sample(tf.shape(is_masked)[:1]), tf.bool)
+        is_unused = is_unused[:, tf.newaxis, tf.newaxis]
+        modified_masks[key] = tf.logical_and(is_masked, tf.logical_not(is_unused))
+        modified_inputs[key] = apply_token(inputs[key], column, is_unused, "unused")
+
+    return modified_inputs, masks
+
+
+def rowcol_random_masking(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    mask: tf.Tensor,
+) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+    modified_inputs = {}
+    masks = {}
+
+    B = tf.shape(inputs["left"])[0]
+    S = tf.shape(inputs["left"])[1]
+    F = len(input_columns.values())
+    p = MASK_PROB / 2.0
+    col_mask = tf.random.uniform((B, S), minval=0.0, maxval=1.0) < p
+    row_mask = tf.random.uniform((B, F), minval=0.0, maxval=1.0) < p
+
+    for i, (key, column) in enumerate(input_columns.items()):
+        # don't mask variables defined for canvas
+        if not column["is_sequence"]:
+            modified_inputs[key] = inputs[key]
+            masks[key] = tf.fill(tf.shape(inputs[key]), True)
+            continue
+
+        # merge X-wise mask, and the latter steps are exactly the same as random
+        mfp_mask = mask & (col_mask | row_mask[:, i : i + 1])
+
+        # 80% mask, 10% random token, 10% unchanged
+        chg_mask = mfp_mask & (
+            tf.random.uniform(tf.shape(mfp_mask), minval=0.0, maxval=1.0) < CHANGE_PROB
+        )
+        rand_arr = tf.random.uniform(tf.shape(chg_mask), minval=0.0, maxval=1.0)
+        masked_input = apply_token(
+            inputs[key], column, chg_mask & (rand_arr >= THRESH), "masked"
+        )
+        masked_input = apply_token(
+            masked_input, column, chg_mask & (rand_arr < THRESH), "random"
+        )
+
+        # update input
+        modified_inputs[key] = masked_input
+        masks[key] = mfp_mask
+
+    return modified_inputs, masks
+
+
+def random_masking(
+    inputs: Dict[str, tf.Tensor],
+    input_columns: Dict,
+    mask: tf.Tensor,
+) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+    """
+    Like standard MLM training, do some operations for 15% of the tokens
+    # 80% mask, 10% random token, 10% unchanged
+    """
+
+    # run in eager mode because of random sampling outside tf function
+    modified_inputs = {}
+    masks = {}
+
+    # for random masking
+    for key, column in input_columns.items():
+        # don't mask variables defined for canvas
+        if not column["is_sequence"]:
+            modified_inputs[key] = inputs[key]
+            masks[key] = tf.fill(tf.shape(inputs[key]), True)
+            continue
+
+        # create mask with shape (B, S) while ignoring padded region
+        rand_arr = tf.random.uniform(tf.shape(inputs[key])[:-1], minval=0.0, maxval=1.0)
+        mfp_mask = mask & (rand_arr < MASK_PROB)
+
+        # 80% mask, 10% random token, 10% unchanged
+        chg_mask = mfp_mask & (
+            tf.random.uniform(tf.shape(mfp_mask), minval=0.0, maxval=1.0) < CHANGE_PROB
+        )
+        rand_arr = tf.random.uniform(tf.shape(chg_mask), minval=0.0, maxval=1.0)
+        masked_input = apply_token(
+            inputs[key], column, chg_mask & (rand_arr >= THRESH), "masked"
+        )
+        masked_input = apply_token(
+            masked_input, column, chg_mask & (rand_arr < THRESH), "random"
+        )
+
+        # update input
+        modified_inputs[key] = masked_input
+        masks[key] = mfp_mask
+
+    return modified_inputs, masks
+
+
+===== dataforfd-spec.yml =====
+name: crello
+columns:
+  id:
+    dtype: string
+    demo_only: true
+  length:
+    dtype: int64
+    lookup:
+      vocabulary:
+        min: 1
+        max: 50
+      num_oov_indices: 0
+      mask_value: null
+  group:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  format:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  canvas_width:
+    dtype: int64
+    lookup:
+      num_oov_indices: 0
+  canvas_height:
+    dtype: int64
+    lookup:
+      num_oov_indices: 0
+  category:
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+  type:
+    is_sequence: true
+    dtype: string
+    lookup:
+      mask_token: ''
+      num_oov_indices: 0
+    primary_label:
+      default: ''
+  left:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  top:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  width:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  height:
+    is_sequence: true
+    dtype: float32
+    discretize:
+      min: 0.0
+      max: 1.0
+      bins: 64
+  image_embedding:
+    is_sequence: true
+    shape: [512]
+    dtype: float32
+    loss_condition:
+      key: type
+      values:
+        - humanElement
+
+  uuid:
+    is_sequence: true
+    dtype: string
+    demo_only: true
+
+===== mask.py =====
+import tensorflow as tf
+
+
+class Unmask(tf.keras.layers.Layer):
+    """Layer to stop mask propagation."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.supports_masking = True
+
+    def compute_mask(self, inputs, mask=None):
+        return None
+
+    def call(self, inputs, mask=None):
+        if hasattr(inputs, "_keras_mask"):
+            delattr(inputs, "_keras_mask")
+        return inputs
+
+
+# @tf.function(experimental_relax_shapes=True)
+def get_seq_mask(inputs, from_logits: bool = False, maxlen: int = None):
+    """Generate mask from length."""
+    if from_logits:
+        length = tf.reshape(tf.argmax(inputs, axis=-1), (-1,))
+    else:
+        length = tf.reshape(inputs, (-1,))
+
+    # Fix zero-based index.
+    length += 1
+
+    seq_mask = tf.sequence_mask(length, maxlen=maxlen)
+    tf.debugging.assert_rank(seq_mask, 2)
+    return seq_mask
+
+
+===== utils.py =====
+import logging
+
+import tensorflow as tf
+
+logger = logging.getLogger(__name__)
+
+
+def make_dense_options(l2: float):
+    if l2 is None:
+        return {}
+    return dict(
+        kernel_regularizer=tf.keras.regularizers.l2(l2),
+        bias_regularizer=tf.keras.regularizers.l2(l2),
+    )
+
+
+def make_emb_options(l2: float):
+    if l2 is None:
+        return {}
+    return dict(
+        embeddings_regularizer=tf.keras.regularizers.l2(l2),
+    )
+
+
+===== transformer.py =====
+import tensorflow as tf
+from mfp.models.architecture.utils import make_dense_options
+
+
+class PositionEmbedding(tf.keras.layers.Layer):
+    """Returns positional const embeddings."""
+
+    def __init__(
+        self,
+        output_dim,
+        maxlen,
+        dropout=0.1,
+        emb_options=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.embeddings = tf.keras.layers.Embedding(
+            maxlen + 1,
+            output_dim,
+            **(emb_options or {}),
+        )
+        self.dropout = tf.keras.layers.Dropout(dropout)
+
+    def call(self, inputs, training=False):
+        B = tf.shape(inputs)[0]
+        positions = tf.range(tf.shape(inputs)[1])
+        embeddings = self.embeddings(positions[tf.newaxis, :])
+        embeddings = tf.tile(embeddings, [B, 1, 1])
+        embeddings = self.dropout(embeddings, training=training)
+        return embeddings
+
+
+class MultiHeadSelfAttention(tf.keras.layers.Layer):
+    """
+    Taken from
+    https://keras.io/examples/nlp/text_classification_with_transformer/
+
+    :param emb_size: Size of the embedding.
+    :param num_heads: Number of heads.
+    :param lookahead: Allow attention to future tokens.
+    """
+
+    def __init__(self, emb_size, num_heads=8, lookahead=True, **dense_options):
+        super().__init__()
+        self.emb_size = emb_size
+        self.num_heads = num_heads
+        self.lookahead = lookahead
+        if emb_size % num_heads != 0:
+            raise ValueError(
+                f"embedding dimension = {emb_size} should be divisible by "
+                f"number of heads = {num_heads}."
+            )
+        self.projection_dim = emb_size // num_heads
+        self.dense_query = tf.keras.layers.Dense(emb_size, **dense_options)
+        self.dense_key = tf.keras.layers.Dense(emb_size, **dense_options)
+        self.dense_value = tf.keras.layers.Dense(emb_size, **dense_options)
+        self.combine_heads = tf.keras.layers.Dense(emb_size, **dense_options)
+        self.supports_masking = True
+
+    def attention(self, query, key, value, mask=None):
+        score = tf.matmul(query, key, transpose_b=True)  # (B, H, S, projection_dim)
+        dim_key = tf.cast(tf.shape(key)[-1], tf.float32)  # (B, H, S, S)
+        scaled_score = score / tf.math.sqrt(dim_key)  # (B, H, S, S)
+        if mask is not None:
+            # padding mask (B, 1, 1, S)
+            mask = tf.cast(mask, tf.float32)[:, tf.newaxis, tf.newaxis, :]
+            if not self.lookahead:
+                size = tf.shape(mask)[-1]
+                mask *= tf.linalg.band_part(tf.ones((size, size)), -1, 0)[
+                    tf.newaxis, tf.newaxis, :, :
+                ]
+            # Force large negative for masks: (B, H, S, S).
+            scaled_score += -1e9 * (1.0 - mask)
+        weights = tf.nn.softmax(scaled_score, axis=-1)  # (B, H, S, S)
+        output = tf.matmul(weights, value)  # (B, H, S, projection_dim)
+        return output, weights
+
+    def separate_heads(self, x, batch_size):
+        x = tf.reshape(x, (batch_size, -1, self.num_heads, self.projection_dim))
+        return tf.transpose(x, perm=[0, 2, 1, 3])
+
+    def call(self, inputs, mask=None):
+        # inputs.shape = [B, S, embedding_dim]
+        batch_size = tf.shape(inputs)[0]
+        query = self.dense_query(inputs)  # (B, S, emb_size)
+        query = self.separate_heads(query, batch_size)  # (B, H, S, projection_dim)
+        key = self.dense_key(inputs)  # (B, S, emb_size)
+        key = self.separate_heads(key, batch_size)  # (B, H, S, projection_dim)
+        value = self.dense_value(inputs)  # (B, S, emb_size)
+        value = self.separate_heads(value, batch_size)  # (B, H, S, projection_dim)
+        attention, _ = self.attention(query, key, value, mask)
+        attention = tf.transpose(
+            attention, perm=[0, 2, 1, 3]
+        )  # (B, S, H, projection_dim)
+        concat_attention = tf.reshape(
+            attention, (batch_size, -1, self.emb_size)
+        )  # (B, S, emb_size)
+        output = self.combine_heads(concat_attention)  # (B, S, emb_size)
+        return output
+
+
+class MultiHeadCrossAttention(MultiHeadSelfAttention):
+    """
+    Taken from
+    https://keras.io/examples/nlp/text_classification_with_transformer/
+
+    :param emb_size: Size of the embedding.
+    :param num_heads: Number of heads.
+    :param lookahead: Allow attention to future tokens.
+    """
+
+    def __init__(self, emb_size, num_heads=8, lookahead=True, **dense_options):
+        super().__init__(emb_size, num_heads, lookahead, **dense_options)
+        assert self.lookahead
+
+    def call(self, inputs, mask=None):
+        # inputs.shape = [B, S, embedding_dim]
+        x, z = inputs
+        # tgt_mask, memory_mask = masks
+
+        batch_size = tf.shape(x)[0]
+        query = self.dense_query(x)  # (B, S, emb_size)
+        query = self.separate_heads(query, batch_size)  # (B, H, S, projection_dim)
+        key = self.dense_key(z)  # (B, S, emb_size)
+        key = self.separate_heads(key, batch_size)  # (B, H, S, projection_dim)
+        value = self.dense_value(z)  # (B, S, emb_size)
+        value = self.separate_heads(value, batch_size)  # (B, H, S, projection_dim)
+
+        attention, _ = self.attention(query, key, value, mask)
+
+        attention = tf.transpose(
+            attention, perm=[0, 2, 1, 3]
+        )  # (B, S, H, projection_dim)
+        concat_attention = tf.reshape(
+            attention, (batch_size, -1, self.emb_size)
+        )  # (B, S, emb_size)
+        output = self.combine_heads(concat_attention)  # (B, S, emb_size)
+        return output
+
+
+class TransformerBlock(tf.keras.layers.Layer):
+    """Transformer block with optional global conditional."""
+
+    def __init__(
+        self,
+        emb_size=64,
+        num_heads=8,
+        ff_dim=None,
+        dropout=0.1,
+        conditional=None,
+        pooling=None,
+        dense_options=None,
+        lookahead=True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        dense_options = dense_options or {}
+        self.attn = MultiHeadSelfAttention(
+            emb_size, num_heads, lookahead=lookahead, **dense_options
+        )
+        self.mlp = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(
+                    ff_dim or (2 * emb_size),
+                    activation="relu",
+                    **dense_options,
+                ),
+                # tf.keras.layers.ReLU(),
+                tf.keras.layers.Dense(emb_size, **dense_options),
+            ]
+        )
+        self.norm1 = tf.keras.layers.LayerNormalization()
+        self.norm2 = tf.keras.layers.LayerNormalization()
+        self.dropout1 = tf.keras.layers.Dropout(dropout)
+        self.dropout2 = tf.keras.layers.Dropout(dropout)
+        self.supports_masking = True
+        self.conditional = None
+        if conditional:
+            self.norm3 = tf.keras.layers.LayerNormalization()
+            self.conditional = tf.keras.layers.Dense(emb_size, **dense_options)
+
+        self.pooling = None
+        if pooling:
+            self.relu = tf.keras.layers.Activation("relu")
+            self.pooling = tf.keras.layers.GlobalAveragePooling1D()
+
+    def call(self, inputs, training=False, mask=None):
+        if self.conditional is not None:
+            x = inputs[0]
+            z = inputs[1]
+        else:
+            x = inputs
+        y = self.attn(x, mask=mask)
+        y = self.dropout1(y, training=training)
+        x = self.norm1(x + y, training=training)
+        if self.conditional is not None:
+            z = tf.expand_dims(self.conditional(z), 1)
+            x = self.norm3(x + z, training=training)
+        y = self.mlp(x)
+        y = self.dropout2(y, training=training)
+        x = self.norm2(x + y, training=training)
+        if self.pooling is not None:
+            x = self.relu(x)
+            return self.pooling(x, mask=mask)
+        return x
+
+
+class DeepSVGBlock(TransformerBlock):
+    """DeepSVG transformer block."""
+
+    def call(self, inputs, training=False, mask=None):
+        if self.conditional is not None:
+            x, z = inputs
+        else:
+            x = inputs
+        y = self.norm1(x, training=training)
+        y = self.attn(y, mask=mask)
+        y = self.dropout1(y, training=training)
+        x += y
+        if self.conditional is not None:
+            x += tf.expand_dims(self.conditional(z), 1)
+        y = self.norm2(x, training=training)
+        y = self.mlp(y)
+        y = self.dropout2(y, training=training)
+        x = x + y
+        if self.pooling is not None:
+            x = self.relu(x)
+            return self.pooling(x, mask=mask)
+        return x
+
+
+def get_seq_block(layer_type):
+    return {
+        "transformer": TransformerBlock,
+        "deepsvg": DeepSVGBlock,
+    }[layer_type]
+
+
+class Blocks(tf.keras.layers.Layer):
+    """
+    Stack of transformer layers implementation.
+    """
+
+    def __init__(
+        self,
+        latent_dim=128,
+        num_blocks=1,
+        block_type="deepsvg",
+        conditional=None,
+        lookahead=True,  # False if using auto-regressive models
+        dropout=0.1,
+        l2=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.seq2seq = {}
+        self.latent_dim = latent_dim
+        self.num_blocks = num_blocks
+        self.conditional = conditional
+
+        layer_fn = get_seq_block(block_type)
+        for i in range(num_blocks):
+            self.seq2seq["seq2seq_%d" % i] = layer_fn(
+                latent_dim,
+                dropout=dropout,
+                conditional=conditional,
+                dense_options=make_dense_options(l2),
+                lookahead=lookahead,
+                name="seq2seq_%d" % i,
+            )
+
+    def __call__(self, seq, mask, training=False):
+        if self.conditional:
+            seq, z = seq[0], seq[1]
+            for layer in self.seq2seq.values():
+                seq = layer((seq, z), training=training, mask=mask)
+        else:
+            for layer in self.seq2seq.values():
+                seq = layer(seq, training=training, mask=mask)
+        return seq
+
+
+class CrossBlocks(Blocks):
+    """
+    Stack of transformer layers implementation.
+    """
+
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+    def __call__(self, inputs, masks, training=False):
+        tgt, memory = inputs
+        for layer in self.seq2seq.values():
+            tgt = layer((tgt, memory), training=training, masks=masks)
+        return tgt
+
+
+demo_crello.ipynb
+
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Crello analysis\n",
+    "This notebook qualitatively analyzes learned models in Crello dataset."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%load_ext autoreload\n",
+    "%autoreload 2"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Editable parameters"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Please edit these parameters\n",
+    "ckpt_dir = \"/home/dell/Project-HCL/BaseLine/flex-dm/results/crello/ours-exp-ft/checkpoints\"\n",
+    "dataset_name = \"crello\"\n",
+    "db_root = \"/home/dell/Project-HCL/BaseLine/flex-dm/data/crello\"\n",
+    "batch_size = 20\n"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Initialization"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "2025-10-10 01:01:30.827357: I tensorflow/core/platform/cpu_feature_guard.cc:193] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  AVX2 AVX512F AVX512_VNNI FMA\n",
+      "To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.\n",
+      "2025-10-10 01:01:31.031356: I tensorflow/core/util/port.cc:104] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.\n",
+      "2025-10-10 01:01:31.037691: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcudart.so.11.0'; dlerror: libcudart.so.11.0: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:31.037723: I tensorflow/compiler/xla/stream_executor/cuda/cudart_stub.cc:29] Ignore above cudart dlerror if you do not have a GPU set up on your machine.\n",
+      "2025-10-10 01:01:32.585897: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libnvinfer.so.7'; dlerror: libnvinfer.so.7: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:32.585970: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libnvinfer_plugin.so.7'; dlerror: libnvinfer_plugin.so.7: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:32.585978: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Cannot dlopen some TensorRT libraries. If you would like to use Nvidia GPU with TensorRT, please make sure the missing libraries mentioned above are installed properly.\n"
+     ]
+    }
+   ],
+   "source": [
+    "import itertools\n",
+    "import logging\n",
+    "import sys\n",
+    "from typing import Dict, List\n",
+    "from pathlib import Path\n",
+    "\n",
+    "import tensorflow as tf\n",
+    "from IPython.display import display, HTML\n",
+    "%matplotlib inline\n",
+    "import os\n",
+    "# current_path = os.getcwd()\n",
+    "# print(\"当前工作路径：\", current_path)\n",
+    "\n",
+    "sys.path.append(\"../src/mfp\")\n",
+    "\n",
+    "# current_path = os.getcwd()\n",
+    "# print(\"当前工作路径：\", current_path)\n",
+    "# os.chdir(\"/storage/homes/hzj/hzj/Project-HCL/BaseLine/flex-dm/src/mfp\")\n",
+    "os.chdir(\"/home/dell/Project-HCL/BaseLine/flex-dm/src/mfp\")\n",
+    "\n",
+    "\n",
+    "# /home/dell/Project-HCL/BaseLine/flex-dm\n",
+    "\n",
+    "from mfp.data.spec import ATTRIBUTE_GROUPS, DataSpec, set_visual_default\n",
+    "from mfp.helpers.retrieve import ImageRetriever, TextRetriever\n",
+    "from mfp.helpers.svg_crello import SVGBuilder\n",
+    "from mfp.models.mfp import MFP\n",
+    "from mfp.models.architecture.mask import get_seq_mask\n",
+    "from mfp.models.masking import get_initial_masks\n",
+    "from util import grouper, load_model\n",
+    "\n",
+    "logging.basicConfig(level=logging.INFO)\n",
+    "logger = logging.getLogger(__name__)\n",
+    "\n",
+    "# fix seed for debug\n",
+    "tf.random.set_seed(0)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Load datasets"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/src/mfp/mfp/data/crello-spec.yml\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/count.json\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/vocabulary.json\n",
+      "INFO:mfp.data.spec:Lookup for length: vocabulary_size=50, options={'num_oov_indices': 0, 'mask_value': None}\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WARNING:tensorflow:mask_value is deprecated, use mask_token instead.\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "WARNING:tensorflow:mask_value is deprecated, use mask_token instead.\n",
+      "2025-10-10 01:01:36.125741: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcudart.so.11.0'; dlerror: libcudart.so.11.0: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:36.125835: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcublas.so.11'; dlerror: libcublas.so.11: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:36.125885: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcublasLt.so.11'; dlerror: libcublasLt.so.11: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:36.178578: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcusparse.so.11'; dlerror: libcusparse.so.11: cannot open shared object file: No such file or directory\n",
+      "2025-10-10 01:01:36.178772: W tensorflow/core/common_runtime/gpu/gpu_device.cc:1934] Cannot dlopen some GPU libraries. Please make sure the missing libraries mentioned above are installed properly if you would like to use GPU. Follow the guide at https://www.tensorflow.org/install/gpu for how to download and setup the required libraries for your platform.\n",
+      "Skipping registering GPU devices...\n",
+      "2025-10-10 01:01:36.180065: I tensorflow/core/platform/cpu_feature_guard.cc:193] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  AVX2 AVX512F AVX512_VNNI FMA\n",
+      "To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.\n",
+      "INFO:mfp.data.spec:Lookup for group: vocabulary_size=6, options={'mask_token': '', 'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Lookup for format: vocabulary_size=67, options={'mask_token': '', 'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Lookup for canvas_width: vocabulary_size=41, options={'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Lookup for canvas_height: vocabulary_size=46, options={'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Lookup for category: vocabulary_size=23, options={'mask_token': '', 'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Lookup for type: vocabulary_size=5, options={'mask_token': '', 'num_oov_indices': 0}\n",
+      "INFO:mfp.data.spec:Discretizer for left: bins=64\n",
+      "INFO:mfp.data.spec:Discretizer for top: bins=64\n",
+      "INFO:mfp.data.spec:Discretizer for width: bins=64\n",
+      "INFO:mfp.data.spec:Discretizer for height: bins=64\n",
+      "INFO:mfp.data.spec:Discretizer for opacity: bins=8\n",
+      "INFO:mfp.data.spec:Discretizer for color: bins=16\n",
+      "INFO:mfp.data.spec:Lookup for font_family: vocabulary_size=34, options={'num_oov_indices': 1, 'mask_token': None}\n",
+      "INFO:mfp.data.spec:TFRecord from /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/test-*.tfrecord\n",
+      "/home/dell/anaconda3/envs/fd/lib/python3.7/site-packages/tensorflow/python/data/ops/dataset_ops.py:2292: UserWarning: The `deterministic` argument has no effect unless the `num_parallel_calls` argument is specified.\n",
+      "  warnings.warn(\"The `deterministic` argument has no effect unless the \"\n"
+     ]
+    }
+   ],
+   "source": [
+    "\n",
+    "dataspec = DataSpec(dataset_name, db_root, batch_size)\n",
+    "test_dataset = dataspec.make_dataset(\"test\", shuffle=False)\n",
+    "\n",
+    "iterator = iter(test_dataset.take(1))\n",
+    "example = next(iterator)"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Load pre-trained models"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "INFO:mfp.data.spec:Loss condition for color: type included in ['textElement', 'coloredBackground']\n",
+      "INFO:mfp.data.spec:Loss condition for image_embedding: type included in ['svgElement', 'imageElement', 'maskElement']\n",
+      "INFO:mfp.data.spec:Loss condition for text_embedding: type included in ['textElement']\n",
+      "INFO:mfp.data.spec:Loss condition for font_family: type included in ['textElement']\n",
+      "INFO:mfp.models.mfp:[('random', 1.0), ('elem', 0.0), ('type', 0.0), ('pos', 0.0), ('img', 0.0)]\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "  type: Linear(256, 6) -> (1, 6)\n",
+      "  left: Linear(256, 64) -> (1, 64)\n",
+      "  top: Linear(256, 64) -> (1, 64)\n",
+      "  width: Linear(256, 64) -> (1, 64)\n",
+      "  height: Linear(256, 64) -> (1, 64)\n",
+      "  opacity: Linear(256, 8) -> (1, 8)\n",
+      "  color: Linear(256, 48) -> (3, 48)\n",
+      "  image_embedding: Linear(256, 512) -> (512,)\n",
+      "  text_embedding: Linear(256, 512) -> (512,)\n",
+      "  font_family: Linear(256, 35) -> (1, 35)\n"
+     ]
+    }
+   ],
+   "source": [
+    "input_columns = dataspec.make_input_columns()\n",
+    "models = {\"main\": load_model(ckpt_dir, input_columns=input_columns)}\n",
+    "\n",
+    "# models = {\"main\": load_model(ckpt_dir, input_columns=input_columns, compile=False)}\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Build DB for image/text retrieval and visualizer"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/src/mfp/mfp/data/crello-images-spec.yml\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/count.json\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/vocabulary.json\n",
+      "INFO:mfp.helpers.retrieve:Fetching image embeddings...\n",
+      "INFO:mfp.data.spec:TFRecord from /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/test-*.tfrecord\n",
+      "INFO:mfp.helpers.retrieve:Building image index...\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/src/mfp/mfp/data/crello-texts-spec.yml\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/count.json\n",
+      "INFO:mfp.data.spec:Loading resource at /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/vocabulary.json\n",
+      "INFO:mfp.helpers.retrieve:Fetching image embeddings...\n",
+      "INFO:mfp.data.spec:TFRecord from /home/dell/Project-HCL/BaseLine/flex-dm/data/crello/test-*.tfrecord\n",
+      "INFO:mfp.helpers.retrieve:Building image index...\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Note: this part takes several minutes due to building search index\n",
+    "db_root = Path(db_root)\n",
+    "image_db = ImageRetriever(db_root, image_path=db_root / \"images\")\n",
+    "image_db.build(\"test\")\n",
+    "text_db = TextRetriever(db_root, text_path=db_root / \"texts\")\n",
+    "text_db.build(\"test\")"
+   ]
+  },
+  {
+   "attachments": {},
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Build visualizer"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "builders = {}\n",
+    "builders[\"layout\"] = SVGBuilder(\n",
+    "    max_width=128,\n",
+    "    max_height=192,\n",
+    "    key=\"type\",\n",
+    "    preprocessor=dataspec.preprocessor,\n",
+    ")\n",
+    "patterns = (\n",
+    "    (\"visual\", image_db, text_db),\n",
+    "    (\"visual_wo_text\", image_db, None),\n",
+    "    (\"visual_wo_image\", None, text_db),\n",
+    ")\n",
+    "\n",
+    "for (name, idb, tdb) in patterns:\n",
+    "    builders[name] = SVGBuilder(\n",
+    "        max_width=128,\n",
+    "        max_height=192,\n",
+    "        key=\"color\",\n",
+    "        preprocessor=dataspec.preprocessor,\n",
+    "        image_db=idb,\n",
+    "        text_db=tdb,\n",
+    "        render_text=True,\n",
+    "    )"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### Demo"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 8,7 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "From left to right: gt-layout,gt-visual,pred-layout,pred-visual\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n",
+      "type\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 11,10 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 5,4 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 5,4 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 6,5 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 20,19 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 13,12 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 17,16 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 8,7 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 11,10 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 5,4 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 5,4 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 9,8 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 6,5 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 20,19 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 7,6 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 13,12 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 12,11 for pkl, tfr\n",
+      "WARNING:mfp.helpers.svg_crello:#elements mismatch 17,16 for pkl, tfr\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WARNING:tensorflow:Tensor._shape is private, use Tensor.shape instead. Tensor._shape will eventually be removed.\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "WARNING:tensorflow:Tensor._shape is private, use Tensor.shape instead. Tensor._shape will eventually be removed.\n"
+     ]
+    }
+   ],
+   "source": [
+    "target_task = \"pos\"  # choose from: elem, pos, attr, txt, img\n",
+    "column_names = {\n",
+    "    \"txt\": [\"gt-layout\", \"gt-visual\", \"input\", \"pred\"],\n",
+    "    \"img\": [\"gt-layout\", \"gt-visual\", \"input\", \"pred\"],\n",
+    "    \"attr\": [\"gt-layout\", \"gt-visual\", \"input\", \"pred\"],\n",
+    "    \"pos\": [\"gt-layout\", \"gt-visual\", \"pred-layout\", \"pred-visual\"],\n",
+    "    \"elem\": [\"gt-layout\", \"gt-visual\", \"input-layout\", \"input-visual\", \"pred-layout\", \"pred-visual\"],\n",
+    "}\n",
+    "\n",
+    "def visualize_reconstruction(\n",
+    "    models: List[tf.keras.Model],\n",
+    "    example: Dict,\n",
+    "    dataspec: DataSpec\n",
+    "):\n",
+    "    svgs = []\n",
+    "    items = dataspec.unbatch(example)\n",
+    "    svgs.append(list(map(builders[\"layout\"], items)))\n",
+    "    svgs.append(list(map(builders[\"visual\"], items)))\n",
+    "    if target_task == \"txt\":\n",
+    "        svgs.append(list(map(builders[\"visual_wo_text\"], items)))\n",
+    "    elif target_task == \"img\":\n",
+    "        svgs.append(list(map(builders[\"visual_wo_image\"], items)))\n",
+    "    elif target_task == \"attr\":\n",
+    "        svgs.append(list(map(builders[\"visual\"], [set_visual_default(x) for x in items])))\n",
+    "\n",
+    "    seq_mask = get_seq_mask(example[\"length\"])\n",
+    "    mfp_masks = get_initial_masks(input_columns, seq_mask)\n",
+    "\n",
+    "    for key in mfp_masks.keys():\n",
+    "        if not input_columns[key][\"is_sequence\"]:\n",
+    "            continue\n",
+    "        mask = mfp_masks[key].numpy()\n",
+    "\n",
+    "        if target_task == \"elem\":\n",
+    "            target_indices = [0]  # hide first\n",
+    "            for i in range(len(target_indices)):\n",
+    "                mask[i, target_indices[i]] = True\n",
+    "        else:\n",
+    "            if key == \"type\":\n",
+    "                continue\n",
+    "            attr_groups = ATTRIBUTE_GROUPS[\"crello\"][target_task]\n",
+    "            if key in attr_groups:\n",
+    "                mask = seq_mask\n",
+    "\n",
+    "        mfp_masks[key] = tf.convert_to_tensor(mask)\n",
+    "\n",
+    "    if target_task == \"elem\":\n",
+    "        example_copy = {}\n",
+    "        for key in example.keys():\n",
+    "            # note: assuming similar mask place in a batch\n",
+    "            if example[key].shape[1] > 1:\n",
+    "                B, S = example[key].shape[:2]\n",
+    "                indices = tf.where(~mfp_masks[key][0, :])[:, 0]\n",
+    "                example_copy[key] = tf.gather(\n",
+    "                    example[key], indices, axis=1\n",
+    "                )\n",
+    "                # print(key, example_copy[key].shape)\n",
+    "            else:\n",
+    "                example_copy[key] = example[key]\n",
+    "        example_copy[\"length\"] -= 1\n",
+    "        items = dataspec.unbatch(example_copy)\n",
+    "        svgs.append(list(map(builders[\"layout\"], items)))\n",
+    "        svgs.append(list(map(builders[\"visual\"], items)))\n",
+    "\n",
+    "    for model in models:\n",
+    "        pred = model(example, training=False, demo_args={\"masks\": mfp_masks})\n",
+    "        for key in example:\n",
+    "            if key not in pred:\n",
+    "                pred[key] = example[key]\n",
+    "                print(example['id'])\n",
+    "\n",
+    "        if target_task in [\"pos\", \"elem\"]:\n",
+    "            svgs.append(list(map(builders[\"layout\"], dataspec.unbatch(pred))))\n",
+    "        svgs.append(list(map(builders[\"visual\"], dataspec.unbatch(pred))))\n",
+    "\n",
+    "    return [list(grouper(row, len(column_names[target_task]))) for row in zip(*svgs)]\n",
+    "\n",
+    "iterator = iter(test_dataset.take(1))\n",
+    "example = next(iterator)\n",
+    "\n",
+    "print(f\"From left to right: {','.join(column_names[target_task])}\")\n",
+    "svgs = visualize_reconstruction(models.values(), example, dataspec)\n",
+    "for i, row in enumerate(svgs):\n",
+    "    print(i)\n",
+    "    display(HTML(\"<div>%s</div>\" % \" \".join(itertools.chain.from_iterable(row))))"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "fd",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.12"
+  },
+  "orig_nbformat": 4
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
+
+
+上述代码为原始项目（tensorflow版本），请严格按照上述训练机制（特别是mask机制）修改我现在的训练代码，注意我最终要实现的任务为demo_crello.ipynb中的任务
+
+
+我现在的项目代码(pytorch版本)：
+

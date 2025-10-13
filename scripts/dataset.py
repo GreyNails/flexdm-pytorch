@@ -1,6 +1,5 @@
 """
-PyTorch数据加载器 - 修复版
-生成与TF版本一致的input_columns格式
+修复版 Dataset - 确保所有值都在正确范围内
 """
 
 import json
@@ -12,7 +11,7 @@ from typing import Dict, List, Optional
 
 
 class DesignLayoutDataset(Dataset):
-    """设计布局数据集"""
+    """设计布局数据集 - 修复版"""
     
     def __init__(
         self,
@@ -48,18 +47,20 @@ class DesignLayoutDataset(Dataset):
         """构建字符串到索引的映射"""
         print("\n构建查找表...")
         
-        # === Type映射 ===
+        # === Type映射 - 关键修复：不包含特殊token ===
         type_vocab = self.vocabulary['type']
         if isinstance(type_vocab, list):
-            self.type_to_idx = {v: i+1 for i, v in enumerate(type_vocab)}
+            # 只映射实际的类型，索引从0开始
+            self.type_to_idx = {v: i for i, v in enumerate(type_vocab)}
         else:
-            self.type_to_idx = {k: i+1 for i, k in enumerate(type_vocab.keys())}
+            self.type_to_idx = {k: i for i, k in enumerate(type_vocab.keys())}
         
-        type_vocab_size = len(self.type_to_idx)
-        self.type_to_idx['<NULL>'] = 0
-        self.type_to_idx['<MASK>'] = type_vocab_size + 1
+        # 添加未知类型映射到0
+        self.type_to_idx['<UNKNOWN>'] = 0
+        self.type_vocab_size = len(type_vocab)  # 不包含特殊token
         
-        print(f"  Type词汇表: {len(self.type_to_idx)} 个类型")
+        print(f"  Type词汇表: {self.type_vocab_size} 个类型")
+        print(f"  Type映射: {self.type_to_idx}")
         
         # === Canvas Width映射 ===
         if 'canvas_width' in self.vocabulary:
@@ -71,13 +72,12 @@ class DesignLayoutDataset(Dataset):
             else:
                 widths = list(range(200, 2001, 100))
             
-            self.width_to_idx = {w: i+1 for i, w in enumerate(widths)}
-            self.idx_to_width = {i+1: w for i, w in enumerate(widths)}
-            self.idx_to_width[0] = widths[0] if widths else 800
+            self.width_to_idx = {w: i for i, w in enumerate(widths)}
+            self.idx_to_width = {i: w for i, w in enumerate(widths)}
+            self.idx_to_width[-1] = widths[0] if widths else 800  # 默认值
             
-            self.width_vocab_size = len(widths) + 1
+            self.width_vocab_size = len(widths)
             print(f"  Canvas Width词汇表: {len(widths)} 个尺寸")
-            print(f"    范围: {min(widths)} - {max(widths)}")
         else:
             self.width_to_idx = {}
             self.idx_to_width = {0: 800}
@@ -93,13 +93,12 @@ class DesignLayoutDataset(Dataset):
             else:
                 heights = list(range(200, 2001, 100))
             
-            self.height_to_idx = {h: i+1 for i, h in enumerate(heights)}
-            self.idx_to_height = {i+1: h for i, h in enumerate(heights)}
-            self.idx_to_height[0] = heights[0] if heights else 600
+            self.height_to_idx = {h: i for i, h in enumerate(heights)}
+            self.idx_to_height = {i: h for i, h in enumerate(heights)}
+            self.idx_to_height[-1] = heights[0] if heights else 600
             
-            self.height_vocab_size = len(heights) + 1
+            self.height_vocab_size = len(heights)
             print(f"  Canvas Height词汇表: {len(heights)} 个尺寸")
-            print(f"    范围: {min(heights)} - {max(heights)}")
         else:
             self.height_to_idx = {}
             self.idx_to_height = {0: 600}
@@ -110,27 +109,21 @@ class DesignLayoutDataset(Dataset):
             font_vocab = self.vocabulary['font_family']
             
             if isinstance(font_vocab, dict):
-                total_fonts = len(font_vocab)
                 filtered_fonts = [
                     font for font, count in font_vocab.items() 
                     if count >= self.min_font_freq
                 ]
                 filtered_fonts.sort()
-                
-                print(f"  Font过滤: {total_fonts} -> {len(filtered_fonts)} (频率>={self.min_font_freq})")
-                self.font_to_idx = {font: i+1 for i, font in enumerate(filtered_fonts)}
+                self.font_to_idx = {font: i for i, font in enumerate(filtered_fonts)}
             else:
-                self.font_to_idx = {v: i+1 for i, v in enumerate(font_vocab)}
+                self.font_to_idx = {v: i for i, v in enumerate(font_vocab)}
             
-            vocab_size = len(self.font_to_idx)
-            self.font_to_idx['<NULL>'] = 0
-            self.font_to_idx['<OOV>'] = vocab_size + 1
-            self.font_to_idx['<MASK>'] = vocab_size + 2
+            # 关键修复：OOV索引应该是0（未知），而不是超出范围的值
+            self.font_vocab_size = len(self.font_to_idx)
+            # OOV映射到0
+            self.font_oov_idx = 0
             
-            self.font_oov_idx = vocab_size + 1
-            self.font_vocab_size = vocab_size + 2
-            
-            print(f"  Font词汇表: {len(self.font_to_idx)} 个token (含特殊token)")
+            print(f"  Font词汇表: {self.font_vocab_size} 个字体 (OOV->0)")
         else:
             self.font_to_idx = {}
             self.font_oov_idx = 0
@@ -141,15 +134,16 @@ class DesignLayoutDataset(Dataset):
         self.idx_to_font = {v: k for k, v in self.font_to_idx.items()}
     
     def discretize(self, value: float, min_val: float = 0.0, max_val: float = 1.0) -> int:
-        """将连续值离散化到bins"""
+        """将连续值离散化到bins，确保结果在 [0, bins-1] 范围内"""
         value = np.clip(value, min_val, max_val)
-        return int((value - min_val) / (max_val - min_val) * (self.bins - 1))
+        discrete = int((value - min_val) / (max_val - min_val) * (self.bins - 1))
+        return np.clip(discrete, 0, self.bins - 1)  # 确保不超出范围
     
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
-        """获取单个样本"""
+        """获取单个样本 - 修复版，确保所有值都在范围内"""
         item = self.data[idx]
         length = min(item['length'], self.max_length)
         
@@ -160,13 +154,15 @@ class DesignLayoutDataset(Dataset):
         width_idx = self.width_to_idx.get(canvas_w, 0)
         height_idx = self.height_to_idx.get(canvas_h, 0)
         
-        if width_idx == 0 and self.width_to_idx:
-            closest_w = min(self.width_to_idx.keys(), key=lambda x: abs(x - canvas_w))
-            width_idx = self.width_to_idx[closest_w]
+        if width_idx == 0 and canvas_w not in self.width_to_idx:
+            closest_w = min(self.width_to_idx.keys(), 
+                          key=lambda x: abs(x - canvas_w)) if self.width_to_idx else 800
+            width_idx = self.width_to_idx.get(closest_w, 0)
             
-        if height_idx == 0 and self.height_to_idx:
-            closest_h = min(self.height_to_idx.keys(), key=lambda x: abs(x - canvas_h))
-            height_idx = self.height_to_idx[closest_h]
+        if height_idx == 0 and canvas_h not in self.height_to_idx:
+            closest_h = min(self.height_to_idx.keys(), 
+                          key=lambda x: abs(x - canvas_h)) if self.height_to_idx else 600
+            height_idx = self.height_to_idx.get(closest_h, 0)
         
         sample = {
             'id': item['id'],
@@ -175,49 +171,69 @@ class DesignLayoutDataset(Dataset):
             'canvas_height': torch.tensor([height_idx], dtype=torch.long),
         }
         
-        # 位置和尺寸
+        # 位置和尺寸 - 确保在 [0, bins-1] 范围内
         for key in ['left', 'top', 'width', 'height']:
             values = [self.discretize(item[key][i]) for i in range(length)]
             values += [0] * (self.max_length - length)
             sample[key] = torch.tensor(values, dtype=torch.long).unsqueeze(-1)
         
-        # 类型编码
-        type_ids = [self.type_to_idx.get(item['type'][i], 0) for i in range(length)]
+        # 类型编码 - 确保在 [0, type_vocab_size-1] 范围内
+        type_ids = []
+        for i in range(length):
+            type_name = item['type'][i]
+            type_id = self.type_to_idx.get(type_name, 0)  # 未知类型映射到0
+            type_id = min(type_id, self.type_vocab_size - 1)  # 确保不超出范围
+            type_ids.append(type_id)
         type_ids += [0] * (self.max_length - length)
         sample['type'] = torch.tensor(type_ids, dtype=torch.long).unsqueeze(-1)
         
-        # 不透明度 - 🔧 修复：需要离散化
+        # 不透明度 - 确保在 [0, 7] 范围内
         if 'opacity' in item:
             opacity_values = []
             for i in range(length):
-                # 离散化到8个bins
-                discrete_val = int(item['opacity'][i] * 7)  # 0.0-1.0 -> 0-7
+                # 离散化到8个bins: 0.0-1.0 -> 0-7
+                opacity = np.clip(item['opacity'][i], 0.0, 1.0)
+                discrete_val = int(opacity * 7)
+                discrete_val = min(discrete_val, 7)  # 确保不超过7
                 opacity_values.append(discrete_val)
             opacity_values += [0] * (self.max_length - length)
             sample['opacity'] = torch.tensor(opacity_values, dtype=torch.long).unsqueeze(-1)
         
-        # 颜色 - 🔧 修复：需要离散化RGB值
+        # 颜色 - 确保每个通道在 [0, 15] 范围内
         if 'color' in item:
             colors = []
             for i in range(length):
                 rgb = item['color'][i]
                 # 离散化每个通道：0-255 -> 0-15
-                discrete_rgb = [int(c * 15 / 255) for c in rgb]
+                discrete_rgb = []
+                for c in rgb:
+                    c = np.clip(c, 0, 255)
+                    discrete_c = int(c * 15 / 255)
+                    discrete_c = min(discrete_c, 15)  # 确保不超过15
+                    discrete_rgb.append(discrete_c)
                 colors.append(discrete_rgb)
             for _ in range(self.max_length - length):
                 colors.append([0, 0, 0])
             sample['color'] = torch.tensor(colors, dtype=torch.long)
         
-        # 字体编码
+        # 字体编码 - 确保在 [0, font_vocab_size-1] 范围内
         if 'font_family' in item and self.font_to_idx:
             font_ids = []
             for i in range(length):
                 font_name = item['font_family'][i]
                 font_id = self.font_to_idx.get(font_name, self.font_oov_idx)
+                # 关键修复：确保不超出范围 [0, font_vocab_size-1]
+                font_id = np.clip(font_id, 0, self.font_vocab_size - 1)
                 font_ids.append(font_id)
             
             font_ids += [0] * (self.max_length - length)
             sample['font_family'] = torch.tensor(font_ids, dtype=torch.long).unsqueeze(-1)
+        
+        # UUID - 仅用于demo，不参与训练
+        if 'uuid' in item:
+            # 简单存储原始值，但标记为demo_only
+            uuid_vals = item['uuid'][:length] + [''] * (self.max_length - length)
+            sample['uuid'] = uuid_vals  # 保持为字符串列表，不转tensor
         
         # 图像嵌入
         if 'image_embedding' in item:
@@ -233,20 +249,12 @@ class DesignLayoutDataset(Dataset):
                 text_embs.append([0.0] * 512)
             sample['text_embedding'] = torch.tensor(text_embs, dtype=torch.float32)
         
-        # UUID (demo only)
-        if 'uuid' in item:
-            uuid_vals = item['uuid'][:length] + [''] * (self.max_length - length)
-            # 简单哈希uuid到整数
-            uuid_ids = [hash(u) % 10000 for u in uuid_vals]
-            sample['uuid'] = torch.tensor(uuid_ids, dtype=torch.long).unsqueeze(-1)
-        
         return sample
     
     def get_input_columns(self) -> Dict:
         """
-        生成input_columns配置 - 严格对齐TF格式
-        
-        关键：input_dim不包含<MASK>和<NULL>，这些会在Encoder中+2
+        生成input_columns配置
+        关键：input_dim 是实际的类别数，不包含Encoder会添加的特殊token
         """
         input_columns = {
             'id': {
@@ -264,110 +272,99 @@ class DesignLayoutDataset(Dataset):
             },
             'canvas_width': {
                 'type': 'categorical',
-                'input_dim': len(self.width_to_idx) - 1 if self.width_to_idx else 40,
+                'input_dim': self.width_vocab_size,
                 'shape': [1],
                 'is_sequence': False,
                 'primary_label': None,
             },
             'canvas_height': {
                 'type': 'categorical',
-                'input_dim': len(self.height_to_idx) - 1 if self.height_to_idx else 45,
+                'input_dim': self.height_vocab_size,
                 'shape': [1],
                 'is_sequence': False,
                 'primary_label': None,
             },
             'type': {
                 'type': 'categorical',
-                'input_dim': 6,  # 固定为6（与TF一致）
+                'input_dim': self.type_vocab_size,  # 实际类别数
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': 0,
             },
             'left': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,  # 64
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'top': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,  # 64
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'width': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,  # 64
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'height': {
                 'type': 'categorical',
-                'input_dim': 64,
+                'input_dim': self.bins,  # 64
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'opacity': {
                 'type': 'categorical',
-                'input_dim': 8,  # 固定为8（与TF一致）
+                'input_dim': 8,  # 0-7
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             },
             'color': {
                 'type': 'categorical',
-                'input_dim': 16,  # 固定为16（与TF一致）
+                'input_dim': 16,  # 0-15 每个通道
                 'shape': [3],
                 'is_sequence': True,
                 'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, True, False]
-                }
             },
             'image_embedding': {
                 'type': 'numerical',
                 'shape': [512],
                 'is_sequence': True,
                 'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, True, False, True, False, True]
-                }
             },
             'text_embedding': {
                 'type': 'numerical',
                 'shape': [512],
                 'is_sequence': True,
                 'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, False, False]
-                }
             },
-            'font_family': {
+        }
+        
+        # 只有在有字体数据时才添加
+        if self.font_vocab_size > 0:
+            input_columns['font_family'] = {
                 'type': 'categorical',
-                'input_dim': 35,  # 固定为35（与TF一致）
-                'shape': [1],
-                'is_sequence': True,
-                'primary_label': None,
-                'loss_condition': {
-                    'key': 'type',
-                    'mask': [False, False, True, False, False, False]
-                }
-            },
-            'uuid': {
-                'demo_only': True,
-                'type': 'categorical',
-                'input_dim': 1215,
+                'input_dim': self.font_vocab_size,
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
             }
+        
+        # UUID 仅用于演示，不参与训练
+        input_columns['uuid'] = {
+            'demo_only': True,
+            'type': 'categorical',
+            'input_dim': 1215,
+            'shape': [1],
+            'is_sequence': True,
+            'primary_label': None,
         }
         
         return input_columns
@@ -379,7 +376,7 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     collated = {}
     
     for key in keys:
-        if key == 'id':
+        if key in ['id', 'uuid']:  # id和uuid保持为列表
             collated[key] = [item[key] for item in batch]
         else:
             collated[key] = torch.stack([item[key] for item in batch])
@@ -408,46 +405,3 @@ def create_dataloader(
     )
     
     return dataloader
-
-
-if __name__ == "__main__":
-    data_path = "/home/dell/Project-HCL/BaseLine/flexdm_pt/data/crello_json"
-    
-    print("="*60)
-    print("数据集测试")
-    print("="*60)
-    
-    train_dataset = DesignLayoutDataset(
-        data_path=data_path,
-        split='train',
-        max_length=20,
-        min_font_freq=500,
-    )
-    
-    train_loader = create_dataloader(
-        data_path=data_path,
-        split='train',
-        batch_size=16,
-        shuffle=True,
-    )
-    
-    print(f"\n训练集批次数: {len(train_loader)}")
-    
-    batch = next(iter(train_loader))
-    print("\n样本批次:")
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor):
-            print(f"  {key:20s}: shape={list(value.shape)}, dtype={value.dtype}")
-        else:
-            print(f"  {key:20s}: {type(value)}")
-    
-    input_columns = train_dataset.get_input_columns()
-    print(f"\n生成的input_columns:")
-    for key, config in input_columns.items():
-        print(f"  {key:20s}: {config}")
-    
-    import json
-    output_file = "input_columns_fixed.json"
-    with open(output_file, 'w') as f:
-        json.dump(input_columns, f, indent=2)
-    print(f"\n✓ 配置已保存到: {output_file}")

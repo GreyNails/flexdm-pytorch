@@ -33,5 +33,29 @@
    
 
         },
+        {
+            "name": "Train MFP Model",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/train_pytorch_improved.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data_dir", "/storage/HCL_data/crello_original/to_json",
+                "--config", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/config/train_config.json",
+                "--batch_size", "16",
+                "--num_epochs", "100",
+                "--learning_rate", "0.0001",
+                "--embed_dim", "256",
+                "--num_blocks", "4",
+                "--num_heads", "8",
+                "--save_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints",
+                "--log_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "python": "/home/dell/anaconda3/envs/ptfd311/bin/python",
+            "justMyCode": false
+        }
     ]
 }

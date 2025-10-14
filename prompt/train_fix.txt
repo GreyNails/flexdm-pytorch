@@ -5396,3 +5396,2003 @@ demo_crello.ipynb
 
 我现在的项目代码(pytorch版本)：
 
+===== models_pytorch.py =====
+"""
+PyTorch模型架构 - 完全修复版本
+严格对齐TensorFlow原始实现
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Dict, Optional
+import math
+
+
+# ==================== Transformer Components ====================
+
+class MultiHeadSelfAttention(nn.Module):
+    """多头自注意力机制"""
+    
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        lookahead: bool = True,
+    ):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.lookahead = lookahead
+        
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        B, S, D = x.shape
+        
+        q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        
+        if mask is not None:
+            mask = mask.unsqueeze(1).unsqueeze(2)
+            scores = scores.masked_fill(~mask, float('-inf'))
+            
+            if not self.lookahead:
+                causal_mask = torch.triu(
+                    torch.ones(S, S, device=x.device, dtype=torch.bool),
+                    diagonal=1
+                )
+                scores = scores.masked_fill(causal_mask, float('-inf'))
+        
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        out = torch.matmul(attn_weights, v)
+        out = out.transpose(1, 2).contiguous().view(B, S, D)
+        out = self.out_proj(out)
+        return out
+
+
+class TransformerBlock(nn.Module):
+    """Transformer块(DeepSVG风格)"""
+    
+    def __init__(
+        self,
+        embed_dim: int = 128,
+        num_heads: int = 8,
+        ff_dim: Optional[int] = None,
+        dropout: float = 0.1,
+        lookahead: bool = True,
+    ):
+        super().__init__()
+        ff_dim = ff_dim or (2 * embed_dim)
+        
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = MultiHeadSelfAttention(
+            embed_dim, num_heads, dropout, lookahead
+        )
+        self.dropout1 = nn.Dropout(dropout)
+        
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.ReLU(),
+            nn.Linear(ff_dim, embed_dim),
+        )
+        self.dropout2 = nn.Dropout(dropout)
+    
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        residual = x
+        x = self.norm1(x)
+        x = self.attn(x, mask)
+        x = self.dropout1(x)
+        x = residual + x
+        
+        residual = x
+        x = self.norm2(x)
+        x = self.ffn(x)
+        x = self.dropout2(x)
+        x = residual + x
+        
+        return x
+
+
+class TransformerBlocks(nn.Module):
+    """堆叠的Transformer块"""
+    
+    def __init__(
+        self,
+        num_blocks: int = 4,
+        embed_dim: int = 128,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        lookahead: bool = True,
+    ):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            TransformerBlock(embed_dim, num_heads, dropout=dropout, lookahead=lookahead)
+            for _ in range(num_blocks)
+        ])
+    
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        for block in self.blocks:
+            x = block(x, mask)
+        return x
+
+
+# ==================== Encoder(修复版本)====================
+
+class Encoder(nn.Module):
+    """编码器 - 严格对齐TF版本"""
+    
+    def __init__(
+        self,
+        input_columns: Dict,
+        embed_dim: int = 128,
+        dropout: float = 0.1,
+        max_length: int = 50,
+    ):
+        super().__init__()
+        self.input_columns = input_columns
+        self.embed_dim = embed_dim
+        
+        # 使用列表存储层
+        self.emb_layers = nn.ModuleList()
+        self.emb_keys = []
+        
+        print("初始化Encoder:")
+        for key, column in input_columns.items():
+            # 跳过非序列字段和demo_only字段
+            if not column.get('is_sequence', False):
+                continue
+            if column.get('demo_only', False):
+                continue
+            
+            self.emb_keys.append(key)
+            
+            if column['type'] == 'categorical':
+                # +2 用于<MASK>和<UNUSED>标记
+                vocab_size = column['input_dim'] + 2
+                self.emb_layers.append(nn.Embedding(vocab_size, embed_dim))
+                print(f"  {key}: Embedding({vocab_size}, {embed_dim})")
+            elif column['type'] == 'numerical':
+                # 数值类型需要额外的特殊标记嵌入
+                input_size = column['shape'][-1] if 'shape' in column else 1
+                self.emb_layers.append(nn.Linear(input_size, embed_dim))
+                print(f"  {key}: Linear({input_size}, {embed_dim})")
+        
+        print(f"总计: {len(self.emb_keys)} 个特征")
+        
+        self.pos_embedding = nn.Embedding(max_length + 1, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> tuple:
+        """前向传播"""
+        batch_size = inputs['length'].size(0)
+        
+        # 找到序列长度
+        seq_len = None
+        for key in self.emb_keys:
+            if key in inputs:
+                seq_len = inputs[key].size(1)
+                break
+        
+        if seq_len is None:
+            raise ValueError("未找到序列特征")
+        
+        # 编码每个特征
+        seq_embs = []
+        for idx, key in enumerate(self.emb_keys):
+            if key not in inputs:
+                continue
+            
+            x = inputs[key]
+            layer = self.emb_layers[idx]
+            
+            # 根据层类型自动转换输入数据类型
+            if isinstance(layer, nn.Embedding):
+                if x.dtype != torch.long:
+                    x = x.long()
+            elif isinstance(layer, nn.Linear):
+                if x.dtype != torch.float:
+                    x = x.float()
+            
+            emb = layer(x)
+            
+            # 处理多维特征(如RGB) - sum across feature dimension
+            if len(emb.shape) == 4:  # (B, S, 3, D)
+                emb = emb.sum(dim=2)  # -> (B, S, D)
+            
+            seq_embs.append(emb)
+        
+        # 融合特征 - element-wise addition
+        seq = torch.stack(seq_embs).sum(dim=0)
+        
+        # 位置编码
+        positions = torch.arange(seq_len, device=seq.device).unsqueeze(0).expand(batch_size, -1)
+        seq = seq + self.pos_embedding(positions)
+        seq = self.dropout(seq)
+        
+        # 生成掩码
+        lengths = inputs['length'].squeeze(-1)
+        mask = torch.arange(seq_len, device=seq.device).unsqueeze(0) < lengths.unsqueeze(1)
+        
+        return seq, mask
+
+
+# ==================== Decoder(修复版本)====================
+
+class Decoder(nn.Module):
+    """解码器 - 严格对齐TF版本"""
+    
+    def __init__(self, input_columns: Dict, embed_dim: int = 128):
+        super().__init__()
+        self.input_columns = input_columns
+        
+        # 使用列表存储层
+        self.head_layers = nn.ModuleList()
+        self.head_keys = []
+        self.head_configs = []
+        
+        print("初始化Decoder:")
+        for key, column in input_columns.items():
+            # 跳过非序列字段和demo_only字段
+            if not column.get('is_sequence', False):
+                continue
+            if column.get('demo_only', False):
+                continue
+            
+            self.head_keys.append(key)
+            self.head_configs.append(column)
+            
+            if column['type'] == 'categorical':
+                shape = column.get('shape', [1])
+                # 关键修复：输出维度 = shape[-1] * input_dim
+                output_dim = shape[-1] * column['input_dim']
+                self.head_layers.append(nn.Linear(embed_dim, output_dim))
+                print(f"  {key}: Linear({embed_dim}, {output_dim}) -> ({shape[-1]}, {column['input_dim']})")
+            else:
+                shape = column.get('shape', [1])
+                output_dim = shape[-1]
+                self.head_layers.append(nn.Linear(embed_dim, output_dim))
+                print(f"  {key}: Linear({embed_dim}, {output_dim})")
+        
+        print(f"总计: {len(self.head_keys)} 个输出头")
+    
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        outputs = {}
+        batch_size, seq_len, _ = x.shape
+        
+        for idx, key in enumerate(self.head_keys):
+            column = self.head_configs[idx]
+            pred = self.head_layers[idx](x)
+            
+            if column['type'] == 'categorical':
+                shape = column.get('shape', [1])
+                num_features = shape[-1]
+                vocab_size = column['input_dim']
+                # Reshape: (B, S, num_features*vocab_size) -> (B, S, num_features, vocab_size)
+                pred = pred.view(batch_size, seq_len, num_features, vocab_size)
+            
+            outputs[key] = pred
+        
+        return outputs
+
+
+# ==================== MFP Model ====================
+
+class MFP(nn.Module):
+    """Masked Field Prediction模型"""
+    
+    def __init__(
+        self,
+        input_columns: Dict,
+        embed_dim: int = 128,
+        num_blocks: int = 4,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        max_length: int = 50,
+    ):
+        super().__init__()
+        self.input_columns = input_columns
+        
+        print("\n" + "="*60)
+        print("初始化MFP模型")
+        print("="*60)
+        
+        self.encoder = Encoder(
+            input_columns, embed_dim, dropout, max_length
+        )
+        
+        print("\n初始化Transformer:")
+        print(f"  blocks={num_blocks}, embed_dim={embed_dim}, num_heads={num_heads}")
+        self.transformer = TransformerBlocks(
+            num_blocks, embed_dim, num_heads, dropout, lookahead=True
+        )
+        
+        print("")
+        self.decoder = Decoder(input_columns, embed_dim)
+        
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n总参数数: {total_params:,}")
+        print("="*60 + "\n")
+    
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        x, mask = self.encoder(inputs) #torch.Size([20, 20, 256])
+        x = self.transformer(x, mask) #torch.Size([20, 20, 256])
+        outputs = self.decoder(x)
+        return outputs
+    
+    def load_converted_weights(self, checkpoint_path: str):
+        """加载转换后的权重"""
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        state_dict = checkpoint['state_dict']
+        
+        missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
+        
+        if missing_keys:
+            print(f"警告: 缺失 {len(missing_keys)} 个键")
+            for key in missing_keys[:5]:
+                print(f"  - {key}")
+        if unexpected_keys:
+            print(f"警告: 多余 {len(unexpected_keys)} 个键")
+            for key in unexpected_keys[:5]:
+                print(f"  - {key}")
+        
+        print("✓ 权重加载完成")
+
+
+# ==================== 测试代码 ====================
+
+if __name__ == "__main__":
+    print("测试MFP模型(修复版本)\n")
+    
+    # 使用原始TF格式的input_columns
+    input_columns = {
+        'type': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 6, 
+            'shape': [1]
+        },
+        'left': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 64, 
+            'shape': [1]
+        },
+        'top': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 64, 
+            'shape': [1]
+        },
+        'width': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 64, 
+            'shape': [1]
+        },
+        'height': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 64, 
+            'shape': [1]
+        },
+        'opacity': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 8, 
+            'shape': [1]
+        },
+        'color': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 16, 
+            'shape': [3]
+        },
+        'image_embedding': {
+            'is_sequence': True, 
+            'type': 'numerical', 
+            'shape': [512]
+        },
+        'text_embedding': {
+            'is_sequence': True, 
+            'type': 'numerical', 
+            'shape': [512]
+        },
+        'font_family': {
+            'is_sequence': True, 
+            'type': 'categorical', 
+            'input_dim': 35, 
+            'shape': [1]
+        },
+        'uuid': {
+            'is_sequence': True, 
+            'demo_only': True,
+            'type': 'categorical', 
+            'input_dim': 1215, 
+            'shape': [1]
+        },
+    }
+    
+    model = MFP(input_columns, embed_dim=256, num_blocks=4)
+    
+    # 测试前向传播
+    batch_size = 2
+    seq_len = 10
+    
+    test_input = {
+        'length': torch.tensor([[5], [7]], dtype=torch.long),
+        'type': torch.randint(0, 6, (batch_size, seq_len, 1)),
+        'left': torch.randint(0, 64, (batch_size, seq_len, 1)),
+        'top': torch.randint(0, 64, (batch_size, seq_len, 1)),
+        'width': torch.randint(0, 64, (batch_size, seq_len, 1)),
+        'height': torch.randint(0, 64, (batch_size, seq_len, 1)),
+        'opacity': torch.randint(0, 8, (batch_size, seq_len, 1)),
+        'color': torch.randint(0, 16, (batch_size, seq_len, 3)),
+        'image_embedding': torch.randn(batch_size, seq_len, 512),
+        'text_embedding': torch.randn(batch_size, seq_len, 512),
+        'font_family': torch.randint(0, 35, (batch_size, seq_len, 1)),
+    }
+    
+    print("测试前向传播...")
+    with torch.no_grad():
+        outputs = model(test_input)
+    
+    print("\n✓ 前向传播成功!")
+    print("\n输出形状:")
+    for key, value in outputs.items():
+        print(f"  {key:20s}: {list(value.shape)}")
+    
+    print("\n预期形状对比:")
+    print("  type:  [2, 10, 1, 6]")
+    print("  color: [2, 10, 3, 16]")
+    print("  opacity: [2, 10, 1, 8]")
+
+===== retriever_pytorch.py =====
+"""
+PyTorch版本的检索器
+用于图像和文本的最近邻检索
+"""
+
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict, List
+from base64 import b64encode
+
+import torch
+import numpy as np
+
+# 使用faiss进行快速检索
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+    logging.warning("Faiss not available, using brute force search")
+
+logger = logging.getLogger(__name__)
+
+
+class BaseRetriever:
+    """基础检索器"""
+    
+    def __init__(
+        self,
+        data_path: Path,
+        key: str,
+        value: str,
+        condition: Dict[str, Any] = None,
+        dim: int = 512,
+    ):
+        """
+        Args:
+            data_path: 数据路径
+            key: 查询键
+            value: 检索值
+            condition: 条件过滤
+            dim: 嵌入维度
+        """
+        self.data_path = Path(data_path)
+        self.key = key
+        self.value = value
+        self.condition = condition
+        self.dim = dim
+        
+        self.labels = None
+        self.db = None
+    
+    def build(self, split: str = 'train'):
+        """
+        构建检索索引
+        
+        Args:
+            split: 数据集划分
+        """
+        logger.info(f"Building {self.__class__.__name__} index for {split}...")
+        
+        # 加载数据
+        json_file = self.data_path / f"{split}.json"
+        if not json_file.exists():
+            logger.warning(f"Data file not found: {json_file}")
+            return
+        
+        with open(json_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 提取嵌入和标签
+        embeddings = []
+        labels = []
+        
+        for item in data:
+            length = item['length']
+            
+            for i in range(length):
+                # 检查条件
+                if self.condition:
+                    cond_key = self.condition['key']
+                    cond_values = self.condition['values']
+                    if item[cond_key][i] not in cond_values:
+                        continue
+                
+                # 提取嵌入和标签
+                if self.key in item and self.value in item:
+                    key_val = item[self.key][i]
+                    value_val = item[self.value][i]
+                    
+                    if isinstance(value_val, list) and len(value_val) == self.dim:
+                        embeddings.append(value_val)
+                        labels.append(key_val)
+        
+        if not embeddings:
+            logger.warning(f"No embeddings found for {split}")
+            return
+        
+        # 去重
+        unique_data = {}
+        for label, emb in zip(labels, embeddings):
+            if label not in unique_data:
+                unique_data[label] = emb
+        
+        self.labels = np.array(list(unique_data.keys()))
+        embeddings_list = list(unique_data.values())
+        
+        # 确保正确转换为连续的2D numpy数组
+        if embeddings_list:
+            # 先转换为 numpy 数组
+            embeddings = np.array(embeddings_list, dtype=np.float32)
+            
+            # 确保是 C-contiguous 内存布局
+            if not embeddings.flags['C_CONTIGUOUS']:
+                embeddings = np.ascontiguousarray(embeddings)
+            
+            # 验证形状和类型
+            assert embeddings.ndim == 2, f"Expected 2D array, got {embeddings.ndim}D"
+            assert embeddings.shape[1] == self.dim, f"Expected dim={self.dim}, got {embeddings.shape[1]}"
+            assert embeddings.dtype == np.float32, f"Expected float32, got {embeddings.dtype}"
+            
+            logger.info(f"Embeddings shape: {embeddings.shape}, dtype: {embeddings.dtype}, "
+                       f"C-contiguous: {embeddings.flags['C_CONTIGUOUS']}")
+        else:
+            logger.warning(f"No embeddings after deduplication for {split}")
+            return
+        
+        # 构建索引
+        if FAISS_AVAILABLE:
+            try:
+                self.db = faiss.IndexFlatL2(self.dim)
+                # 确保 embeddings 是正确的格式
+                embeddings_copy = np.copy(embeddings, order='C')
+                self.db.add(embeddings_copy)
+            except Exception as e:
+                logger.error(f"Faiss error: {e}")
+                logger.info("Falling back to PyTorch brute force search")
+                self.db = torch.from_numpy(embeddings)
+        else:
+            # 使用PyTorch进行暴力搜索
+            self.db = torch.from_numpy(embeddings)
+        
+        logger.info(f"✓ Built index with {len(self.labels)} items")
+    
+    def search(self, query, k: int = 1):
+        """
+        搜索最近邻
+        
+        Args:
+            query: 查询向量
+            k: 返回的最近邻数量
+        
+        Returns:
+            检索结果
+        """
+        if self.labels is None or self.db is None:
+            return self.get_default_result()
+        
+        # 转换查询为numpy
+        if torch.is_tensor(query):
+            query = query.cpu().numpy()
+        if not isinstance(query, np.ndarray):
+            query = np.array(query, dtype=np.float32)
+        
+        if query.ndim == 1:
+            query = query.reshape(1, -1)
+        
+        # 确保查询是 C-contiguous 和 float32
+        query = np.ascontiguousarray(query, dtype=np.float32)
+        
+        # 搜索
+        if FAISS_AVAILABLE:
+            _, indices = self.db.search(query, k)
+        else:
+            # PyTorch暴力搜索
+            query_torch = torch.from_numpy(query)
+            distances = torch.cdist(query_torch, self.db)
+            _, indices = distances.topk(k, largest=False)
+            indices = indices.cpu().numpy()
+        
+        # 获取结果
+        results = [self.get_url(idx) for idx in indices[0]]
+        
+        return results[0] if k == 1 else results
+    
+    def get_url(self, index: int) -> str:
+        """获取URL（子类实现）"""
+        raise NotImplementedError
+    
+    def get_default_result(self):
+        """获取默认结果"""
+        return ""
+
+
+class ImageRetriever(BaseRetriever):
+    """图像检索器"""
+    
+    def __init__(
+        self,
+        data_path: Path,
+        key: str = 'image_hash',
+        value: str = 'image_embedding',
+        condition: Dict[str, Any] = None,
+        image_path: Path = None,
+        dim: int = 512,
+    ):
+        """
+        Args:
+            data_path: 数据路径
+            key: 图像哈希键
+            value: 图像嵌入键
+            condition: 条件过滤
+            image_path: 图像文件路径
+            dim: 嵌入维度
+        """
+        super().__init__(data_path, key, value, condition, dim)
+        
+        if condition is None:
+            self.condition = {
+                'key': 'type',
+                'values': ['imageElement', 'maskElement', 'svgElement', 'humanElement'],
+            }
+        
+        self.image_path = image_path or self.data_path / 'images'
+    
+    def get_url(self, index: int) -> str:
+        """获取图像URL"""
+        label = self.labels[index]
+        
+        if isinstance(label, bytes):
+            label = label.decode('utf-8')
+        
+        if label:
+            image_file = self.image_path / f"{label}.png"
+            if image_file.exists():
+                return self._make_data_uri(image_file)
+        
+        return ""
+    
+    def _make_data_uri(self, file_path: Path, mime_type: str = 'image/png') -> str:
+        """创建data URI"""
+        try:
+            with open(file_path, 'rb') as f:
+                image_bytes = f.read()
+            data = b64encode(image_bytes).decode('ascii')
+            return f"data:{mime_type};base64,{data}"
+        except Exception as e:
+            logger.warning(f"Failed to read image {file_path}: {e}")
+            return ""
+
+
+class TextRetriever(BaseRetriever):
+    """文本检索器"""
+    
+    def __init__(
+        self,
+        data_path: Path,
+        key: str = 'text_hash',
+        value: str = 'text_embedding',
+        condition: Dict[str, Any] = None,
+        text_path: Path = None,
+        dim: int = 512,
+    ):
+        """
+        Args:
+            data_path: 数据路径
+            key: 文本哈希键
+            value: 文本嵌入键
+            condition: 条件过滤
+            text_path: 文本文件路径
+            dim: 嵌入维度
+        """
+        super().__init__(data_path, key, value, condition, dim)
+        
+        if condition is None:
+            self.condition = {
+                'key': 'type',
+                'values': ['textElement'],
+            }
+        
+        self.text_path = text_path or self.data_path / 'texts'
+    
+    def get_url(self, index: int) -> str:
+        """获取文本内容"""
+        label = self.labels[index]
+        
+        if isinstance(label, bytes):
+            label = label.decode('utf-8')
+        
+        if label:
+            text_file = self.text_path / f"{label}.txt"
+            if text_file.exists():
+                try:
+                    with open(text_file, 'r', encoding='utf-8') as f:
+                        return f.read()
+                except Exception as e:
+                    logger.warning(f"Failed to read text {text_file}: {e}")
+        
+        return "TEXT"
+
+
+# 测试代码
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    # 测试路径
+    data_path = Path("./data/crello_json")
+    
+    if data_path.exists():
+        # 测试图像检索
+        print("测试图像检索器...")
+        image_retriever = ImageRetriever(
+            data_path,
+            image_path=data_path.parent / "crello" / "images"
+        )
+        image_retriever.build("test")
+        
+        # 测试查询
+        if image_retriever.labels is not None:
+            test_query = np.random.randn(512).astype(np.float32)
+            result = image_retriever.search(test_query)
+            print(f"图像检索结果长度: {len(result)}")
+        
+        # 测试文本检索
+        print("\n测试文本检索器...")
+        text_retriever = TextRetriever(
+            data_path,
+            text_path=data_path.parent / "crello" / "texts"
+        )
+        text_retriever.build("test")
+        
+        # 测试查询
+        if text_retriever.labels is not None:
+            test_query = np.random.randn(512).astype(np.float32)
+            result = text_retriever.search(test_query)
+            print(f"文本检索结果: {result[:50]}...")
+        
+        print("\n✓ 测试完成!")
+    else:
+        print(f"数据路径不存在: {data_path}")
+
+===== train_pytorch.py =====
+"""
+改进的PyTorch训练脚本
+修复了原始代码的问题并添加更多功能
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from pathlib import Path
+import argparse
+import json
+from tqdm import tqdm
+import time
+import os
+from typing import Dict
+
+from dataset import create_dataloader, DesignLayoutDataset
+from models_pytorch import MFP
+
+
+class ImprovedMFPTrainer:
+    """改进的MFP模型训练器"""
+    
+    def __init__(
+        self,
+        model: nn.Module,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        config: Dict,
+        device: str = 'cuda',
+        save_dir: str = './checkpoints',
+        log_dir: str = './logs',
+        resume_path: str = None,
+    ):
+        self.model = model.to(device)
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.config = config
+        self.device = device
+        
+        # 训练配置
+        train_cfg = config.get('training', {})
+        self.num_epochs = train_cfg.get('num_epochs', 100)
+        self.gradient_clip = train_cfg.get('gradient_clip', 1.0)
+        self.accumulation_steps = train_cfg.get('accumulation_steps', 1)
+        
+        # 损失权重
+        self.loss_weights = config.get('loss_weights', {})
+        
+        # 优化器
+        self.optimizer = optim.AdamW(
+            model.parameters(),
+            lr=train_cfg.get('learning_rate', 1e-4),
+            betas=(0.9, 0.999),
+            weight_decay=train_cfg.get('weight_decay', 0.01),
+        )
+        
+        # 学习率调度器
+        scheduler_cfg = config.get('scheduler', {})
+        if scheduler_cfg.get('type') == 'ReduceLROnPlateau':
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode=scheduler_cfg.get('mode', 'min'),
+                factor=scheduler_cfg.get('factor', 0.5),
+                patience=scheduler_cfg.get('patience', 5),
+                min_lr=scheduler_cfg.get('min_lr', 1e-6),
+                verbose=True,
+            )
+        else:
+            self.scheduler = None
+        
+        # 目录设置
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # TensorBoard
+        self.writer = SummaryWriter(log_dir)
+        
+        # 训练状态
+        self.start_epoch = 0
+        self.best_val_loss = float('inf')
+        self.global_step = 0
+        
+        # 恢复训练
+        if resume_path and Path(resume_path).exists():
+            self.load_checkpoint(resume_path)
+        
+        print(f"✓ 训练器初始化完成")
+        print(f"  设备: {device}")
+        print(f"  训练批次: {len(train_loader)}")
+        print(f"  验证批次: {len(val_loader)}")
+        print(f"  开始epoch: {self.start_epoch}")
+    
+    def compute_loss(
+        self,
+        predictions: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        计算多任务损失
+        
+        Args:
+            predictions: 模型预测
+            targets: 真实标签
+            mask: 有效位置掩码 (B, S)
+        
+        Returns:
+            损失字典
+        """
+        losses = {}
+        total_loss = 0.0
+        
+        for key in predictions.keys():
+            if key not in targets:
+                continue
+            
+            pred = predictions[key]
+            target = targets[key]
+            
+            # 获取列信息
+            column = self.model.input_columns.get(key, {})
+            weight = self.loss_weights.get(key, 1.0)
+            
+            if column.get('type') == 'categorical':
+                # 分类任务：交叉熵损失
+                # pred: (B, S, num_feat, C), target: (B, S, num_feat)
+                if pred.dim() == 4:  # (B, S, num_feat, C)
+                    B, S, num_feat, C = pred.shape
+                    pred = pred.reshape(B * S * num_feat, C)
+                    target = target.reshape(B * S * num_feat).long()
+                    
+                    loss = F.cross_entropy(pred, target, reduction='none')
+                    loss = loss.reshape(B, S, num_feat)
+                    
+                    # 应用掩码并求平均
+                    mask_expanded = mask.unsqueeze(-1).expand_as(loss)
+                    loss = (loss * mask_expanded.float()).sum() / (mask_expanded.sum() + 1e-8)
+                    
+                elif pred.dim() == 3:  # (B, S, C)
+                    B, S, C = pred.shape
+                    pred = pred.reshape(B * S, C)
+                    target = target.reshape(B * S).long()
+                    
+                    loss = F.cross_entropy(pred, target, reduction='none')
+                    loss = loss.reshape(B, S)
+                    
+                    # 应用掩码
+                    loss = (loss * mask.float()).sum() / (mask.sum() + 1e-8)
+                else:
+                    continue
+            
+            elif column.get('type') == 'numerical':
+                # 回归任务：MSE损失
+                # pred: (B, S, D), target: (B, S, D)
+                loss = F.mse_loss(pred, target, reduction='none')
+                
+                # 应用掩码
+                mask_expanded = mask.unsqueeze(-1).expand_as(loss)
+                loss = (loss * mask_expanded.float()).sum() / (mask_expanded.sum() + 1e-8)
+            else:
+                continue
+            
+            # 应用权重
+            weighted_loss = loss * weight
+            losses[f'{key}_loss'] = loss.detach()
+            total_loss += weighted_loss
+        
+        losses['total_loss'] = total_loss
+        return losses
+    
+    def train_epoch(self, epoch: int):
+        """训练一个epoch"""
+        self.model.train()
+        epoch_losses = {}
+        
+        pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.num_epochs}')
+        self.optimizer.zero_grad()
+        
+        for batch_idx, batch in enumerate(pbar):
+            # 移动到设备
+            inputs = {k: v.to(self.device) if torch.is_tensor(v) else v 
+                     for k, v in batch.items()}
+            
+            # 前向传播
+            outputs = self.model(inputs)
+            
+            # 生成掩码
+            lengths = inputs['length'].squeeze(-1)
+            max_len = inputs['left'].size(1)
+            mask = torch.arange(max_len, device=self.device).unsqueeze(0) < lengths.unsqueeze(1)
+            
+            # 计算损失
+            losses = self.compute_loss(outputs, inputs, mask)
+            loss = losses['total_loss'] / self.accumulation_steps
+            
+            # 反向传播
+            loss.backward()
+            
+            # 梯度累积
+            if (batch_idx + 1) % self.accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+            
+            # 记录损失
+            for key, value in losses.items():
+                if key not in epoch_losses:
+                    epoch_losses[key] = []
+                epoch_losses[key].append(value.item() if torch.is_tensor(value) else value)
+            
+            # 更新进度条
+            pbar.set_postfix({
+                'loss': f"{losses['total_loss'].item():.4f}",
+                'lr': f"{self.optimizer.param_groups[0]['lr']:.6f}"
+            })
+            
+            # TensorBoard记录
+            log_cfg = self.config.get('logging', {})
+            if self.global_step % log_cfg.get('log_interval', 100) == 0:
+                for key, value in losses.items():
+                    self.writer.add_scalar(
+                        f'train/{key}', 
+                        value.item() if torch.is_tensor(value) else value, 
+                        self.global_step
+                    )
+                self.writer.add_scalar('train/lr', self.optimizer.param_groups[0]['lr'], self.global_step)
+            
+            self.global_step += 1
+        
+        # 计算epoch平均损失
+        avg_losses = {k: sum(v) / len(v) for k, v in epoch_losses.items()}
+        return avg_losses
+    
+    @torch.no_grad()
+    def validate(self, epoch: int):
+        """验证"""
+        self.model.eval()
+        epoch_losses = {}
+        
+        for batch in tqdm(self.val_loader, desc='Validation'):
+            # 移动到设备
+            inputs = {k: v.to(self.device) if torch.is_tensor(v) else v 
+                     for k, v in batch.items()}
+            
+            # 前向传播
+            outputs = self.model(inputs)
+            
+            # 生成掩码
+            lengths = inputs['length'].squeeze(-1)
+            max_len = inputs['left'].size(1)
+            mask = torch.arange(max_len, device=self.device).unsqueeze(0) < lengths.unsqueeze(1)
+            
+            # 计算损失
+            losses = self.compute_loss(outputs, inputs, mask)
+            
+            # 记录损失
+            for key, value in losses.items():
+                if key not in epoch_losses:
+                    epoch_losses[key] = []
+                val = value.item() if torch.is_tensor(value) else value
+                epoch_losses[key].append(val)
+        
+        # 计算平均损失
+        avg_losses = {k: sum(v) / len(v) for k, v in epoch_losses.items()}
+        
+        # TensorBoard记录
+        for key, value in avg_losses.items():
+            self.writer.add_scalar(f'val/{key}', value, epoch)
+        
+        return avg_losses
+    
+    def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
+        """保存checkpoint"""
+        checkpoint = {
+            'epoch': epoch,
+            'global_step': self.global_step,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'best_val_loss': self.best_val_loss,
+            'val_loss': val_loss,
+            'config': self.config,
+        }
+        
+        if self.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        
+        # 保存最新模型
+        torch.save(checkpoint, self.save_dir / 'latest.pth')
+        
+        # 保存最佳模型
+        if is_best:
+            torch.save(checkpoint, self.save_dir / 'best.pth')
+            print(f"✓ 保存最佳模型 (epoch {epoch}, val_loss: {val_loss:.4f})")
+        
+        # 定期保存
+        ckpt_cfg = self.config.get('checkpoint', {})
+        if epoch % ckpt_cfg.get('save_interval', 5) == 0:
+            torch.save(checkpoint, self.save_dir / f'checkpoint_epoch_{epoch}.pth')
+        
+        # 清理旧checkpoint
+        self._cleanup_checkpoints(ckpt_cfg.get('keep_last_n', 3))
+    
+    def _cleanup_checkpoints(self, keep_last_n: int):
+        """清理旧的checkpoint"""
+        checkpoints = sorted(self.save_dir.glob('checkpoint_epoch_*.pth'))
+        if len(checkpoints) > keep_last_n:
+            for ckpt in checkpoints[:-keep_last_n]:
+                ckpt.unlink()
+    
+    def load_checkpoint(self, checkpoint_path: str):
+        """加载checkpoint"""
+        print(f"加载checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        self.start_epoch = checkpoint.get('epoch', 0) + 1
+        self.global_step = checkpoint.get('global_step', 0)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        
+        print(f"✓ 恢复训练从 epoch {self.start_epoch}")
+    
+    def train(self):
+        """完整训练流程"""
+        print("\n" + "="*60)
+        print("开始训练")
+        print("="*60)
+        
+        for epoch in range(self.start_epoch, self.num_epochs):
+            start_time = time.time()
+            
+            # 训练
+            train_losses = self.train_epoch(epoch)
+            
+            # 验证
+            log_cfg = self.config.get('logging', {})
+            if epoch % log_cfg.get('val_interval', 1) == 0:
+                val_losses = self.validate(epoch)
+            else:
+                val_losses = {'total_loss': float('inf')}
+            
+            # 学习率调度
+            if self.scheduler is not None:
+                self.scheduler.step(val_losses['total_loss'])
+            
+            # 打印信息
+            epoch_time = time.time() - start_time
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch}/{self.num_epochs - 1} ({epoch_time:.1f}s)")
+            print(f"{'='*60}")
+            print(f"Train Loss: {train_losses['total_loss']:.4f}")
+            if 'total_loss' in val_losses and val_losses['total_loss'] != float('inf'):
+                print(f"Val Loss:   {val_losses['total_loss']:.4f}")
+            print(f"LR:         {self.optimizer.param_groups[0]['lr']:.6f}")
+            print(f"Best Val:   {self.best_val_loss:.4f}")
+            
+            # 保存checkpoint
+            is_best = val_losses['total_loss'] < self.best_val_loss
+            if is_best:
+                self.best_val_loss = val_losses['total_loss']
+            
+            self.save_checkpoint(epoch, val_losses['total_loss'], is_best)
+        
+        print("\n" + "="*60)
+        print("训练完成!")
+        print(f"最佳验证损失: {self.best_val_loss:.4f}")
+        print("="*60)
+        self.writer.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train MFP Model')
+    
+    # 数据参数
+    parser.add_argument('--data_dir', type=str, required=True,
+                       help='JSON数据目录')
+    parser.add_argument('--config', type=str, default='config/train_config.json',
+                       help='训练配置文件')
+    
+    # 覆盖配置的参数
+    parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--num_epochs', type=int, default=None)
+    parser.add_argument('--learning_rate', type=float, default=None)
+    parser.add_argument('--embed_dim', type=int, default=None)
+    parser.add_argument('--num_blocks', type=int, default=None)
+    parser.add_argument('--num_heads', type=int, default=None)
+    parser.add_argument('--num_workers', type=int, default=None)
+    
+    # 训练参数
+    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--save_dir', type=str, default='./checkpoints')
+    parser.add_argument('--log_dir', type=str, default='./logs')
+    parser.add_argument('--resume', type=str, default=None,
+                       help='恢复训练的checkpoint路径')
+    
+    args = parser.parse_args()
+    
+    # 加载配置
+    print("加载配置...")
+    with open(args.config, 'r') as f:
+        config = json.load(f)
+    
+    # 命令行参数覆盖配置
+    if args.batch_size is not None:
+        config['training']['batch_size'] = args.batch_size
+    if args.num_epochs is not None:
+        config['training']['num_epochs'] = args.num_epochs
+    if args.learning_rate is not None:
+        config['training']['learning_rate'] = args.learning_rate
+    if args.embed_dim is not None:
+        config['model']['embed_dim'] = args.embed_dim
+    if args.num_blocks is not None:
+        config['model']['num_blocks'] = args.num_blocks
+    if args.num_heads is not None:
+        config['model']['num_heads'] = args.num_heads
+    if args.num_workers is not None:
+        config['data']['num_workers'] = args.num_workers
+    
+    print(json.dumps(config, indent=2))
+    
+    # 创建数据加载器
+    print("\n加载数据...")
+    train_loader = create_dataloader(
+        args.data_dir, 'train',
+        batch_size=config['training']['batch_size'],
+        shuffle=True,
+        num_workers=config['data'].get('num_workers', 4),
+        max_length=config['data'].get('max_length', 20),
+        bins=config['data'].get('bins', 64),
+        min_font_freq=config['data'].get('min_font_freq', 500),
+    )
+    
+    val_loader = create_dataloader(
+        args.data_dir, 'val',
+        batch_size=config['training']['batch_size'],
+        shuffle=False,
+        num_workers=config['data'].get('num_workers', 4),
+        max_length=config['data'].get('max_length', 20),
+        bins=config['data'].get('bins', 64),
+        min_font_freq=config['data'].get('min_font_freq', 500),
+    )
+    
+    # 获取input_columns
+    dataset = train_loader.dataset
+    input_columns = dataset.get_input_columns()
+    
+    # 保存input_columns
+    input_columns_path = Path(args.save_dir).parent / 'input_columns_used.json'
+    input_columns_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(input_columns_path, 'w') as f:
+        json.dump(input_columns, f, indent=2)
+    print(f"✓ Input columns保存到: {input_columns_path}")
+    
+    # 创建模型
+    print("\n创建模型...")
+    model = MFP(
+        input_columns=input_columns,
+        embed_dim=config['model']['embed_dim'],
+        num_blocks=config['model']['num_blocks'],
+        num_heads=config['model']['num_heads'],
+        dropout=config['model']['dropout'],
+        max_length=config['model']['max_length'],
+    )
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"总参数: {total_params:,}")
+    print(f"可训练参数: {trainable_params:,}")
+    
+    # 创建训练器
+    trainer = ImprovedMFPTrainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=config,
+        device=args.device,
+        save_dir=args.save_dir,
+        log_dir=args.log_dir,
+        resume_path=args.resume,
+    )
+    
+    # 开始训练
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
+
+===== svg_builder_pytorch.py =====
+"""
+PyTorch版本的SVG构建器（简化版 - 避免命名空间问题）
+"""
+
+from typing import Dict, Optional, List
+import numpy as np
+
+
+class SVGBuilder:
+    """SVG构建器 - 简化版，使用字符串模板避免XML命名空间问题"""
+    
+    def __init__(
+        self,
+        key: str = 'type',
+        colormap: Optional[Dict] = None,
+        preprocessor = None,
+        canvas_width: int = 256,
+        canvas_height: int = 256,
+        max_width: Optional[int] = None,
+        max_height: Optional[int] = None,
+        opacity: float = 0.5,
+        image_db = None,
+        text_db = None,
+        render_text: bool = False,
+        **kwargs
+    ):
+        assert key, "key参数不能为空"
+        
+        self.key = key
+        self.canvas_width = canvas_width
+        self.canvas_height = canvas_height
+        self.max_width = max_width
+        self.max_height = max_height
+        self.opacity = opacity
+        self.image_db = image_db
+        self.text_db = text_db
+        self.render_text = render_text
+        
+        # 初始化颜色映射
+        if key == 'color':
+            self.colormap = None
+        elif preprocessor is not None:
+            vocabulary = preprocessor.get(key, {}).get('vocabulary', [])
+            self.colormap = self._make_colormap(vocabulary, colormap)
+        elif colormap is not None:
+            self.colormap = colormap
+        else:
+            self.colormap = self._make_default_colormap()
+    
+    def _make_default_colormap(self) -> Dict:
+        """创建默认颜色映射"""
+        return {
+            '': 'none',
+            'svgElement': 'rgb(66, 166, 246)',
+            'textElement': 'rgb(241, 98, 147)',
+            'imageElement': 'rgb(175, 214, 130)',
+            'maskElement': 'rgb(79, 196, 248)',
+            'coloredBackground': 'rgb(226, 191, 232)',
+            'videoElement': 'rgb(255, 207, 102)',
+            'humanElement': 'rgb(255, 139, 101)',
+        }
+    
+    def _make_colormap(self, vocabulary: List[str], base_colormap=None) -> Dict:
+        """根据词汇表自动生成颜色映射"""
+        if base_colormap:
+            return base_colormap
+        
+        try:
+            from matplotlib import cm
+            vocab_size = len(vocabulary)
+            cmap = cm.get_cmap('tab20', vocab_size)
+            return {
+                label: f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})'
+                for label, c in zip(vocabulary, cmap(range(vocab_size)))
+            }
+        except ImportError:
+            return self._make_default_colormap()
+    
+    def compute_canvas_size(self, document: Dict):
+        """计算实际画布大小"""
+        canvas_width = document.get('canvas_width', self.canvas_width)
+        canvas_height = document.get('canvas_height', self.canvas_height)
+        
+        scale = 1.0
+        if self.max_width is not None:
+            scale = min(self.max_width / canvas_width, scale)
+        if self.max_height is not None:
+            scale = min(self.max_height / canvas_height, scale)
+        
+        return canvas_width * scale, canvas_height * scale
+    
+    def __call__(self, document: Dict) -> str:
+        """将文档转换为SVG字符串（使用字符串模板）"""
+        canvas_width, canvas_height = self.compute_canvas_size(document)
+        
+        # SVG头部
+        svg_parts = [
+            f'<svg width="{int(canvas_width)}" height="{int(canvas_height)}" '
+            f'viewBox="0 0 1 1" style="background-color: #FFF" '
+            f'preserveAspectRatio="none" '
+            f'xmlns="http://www.w3.org/2000/svg" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink">'
+        ]
+        
+        # 添加元素
+        elements = document.get('elements', [])
+        for i, element in enumerate(elements):
+            svg_parts.append(self._element_to_svg(element, i))
+        
+        # SVG尾部
+        svg_parts.append('</svg>')
+        
+        return '\n'.join(svg_parts)
+    
+    def _element_to_svg(self, element: Dict, index: int) -> str:
+        """将单个元素转换为SVG字符串"""
+        # 获取颜色
+        if self.key == 'color':
+            color = element.get('color', [0, 0, 0])
+            if isinstance(color, (list, tuple, np.ndarray)):
+                fill = f'rgb({int(color[0])},{int(color[1])},{int(color[2])})'
+            else:
+                fill = 'rgb(0,0,0)'
+        else:
+            element_type = element.get(self.key, '')
+            if isinstance(element_type, (list, tuple)):
+                element_type = element_type[0] if len(element_type) > 0 else ''
+            if isinstance(element_type, (int, float, np.integer, np.floating)):
+                element_type = str(int(element_type))
+            if isinstance(element_type, bytes):
+                element_type = element_type.decode('utf-8')
+            fill = self.colormap.get(element_type, 'rgb(128,128,128)')
+        
+        # 获取位置和尺寸
+        left = float(element.get('left', 0))
+        top = float(element.get('top', 0))
+        width = float(element.get('width', 0.1))
+        height = float(element.get('height', 0.1))
+        opacity_val = float(element.get('opacity', 1.0))
+        
+        # 元素ID和类型
+        uuid = element.get('uuid', f'elem_{index}')
+        if isinstance(uuid, bytes):
+            uuid = uuid.decode('utf-8')
+        elem_type = str(element.get('type', ''))
+        
+        # 检查图像
+        image_url = None
+        if self.image_db:
+            et = element.get('type', '')
+            if isinstance(et, bytes):
+                et = et.decode('utf-8')
+            if et in self.image_db.condition.get('values', []):
+                if self.image_db.value in element:
+                    image_url = self.image_db.search(element[self.image_db.value])
+        
+        # 检查文本
+        text_content = None
+        if self.text_db or self.render_text:
+            et = element.get('type', '')
+            if isinstance(et, bytes):
+                et = et.decode('utf-8')
+            if et == 'textElement':
+                if self.text_db and self.text_db.value in element:
+                    text_content = self.text_db.search(element[self.text_db.value])
+                else:
+                    text_content = "TEXT TEXT TEXT"
+        
+        # 生成SVG
+        if image_url and image_url != '':
+            return self._make_image_svg(uuid, elem_type, left, top, width, height, opacity_val, image_url)
+        elif self.render_text and text_content:
+            return self._make_text_svg(uuid, elem_type, left, top, width, height, opacity_val, fill, text_content, element)
+        else:
+            return self._make_rect_svg(uuid, elem_type, left, top, width, height, opacity_val * self.opacity, fill)
+    
+    def _make_rect_svg(self, uuid: str, elem_type: str, left: float, top: float, 
+                       width: float, height: float, opacity: float, fill: str) -> str:
+        """创建矩形SVG"""
+        return (
+            f'<rect id="{uuid}" class="{elem_type}" '
+            f'x="{left:.6f}" y="{top:.6f}" '
+            f'width="{width:.6f}" height="{height:.6f}" '
+            f'fill="{fill}" opacity="{opacity:.3f}"/>'
+        )
+    
+    def _make_image_svg(self, uuid: str, elem_type: str, left: float, top: float,
+                        width: float, height: float, opacity: float, url: str) -> str:
+        """创建图像SVG"""
+        return (
+            f'<image id="{uuid}" class="{elem_type}" '
+            f'x="{left:.6f}" y="{top:.6f}" '
+            f'width="{width:.6f}" height="{height:.6f}" '
+            f'xlink:href="{url}" opacity="{opacity:.3f}" '
+            f'preserveAspectRatio="none"/>'
+        )
+    
+    def _make_text_svg(self, uuid: str, elem_type: str, left: float, top: float,
+                       width: float, height: float, opacity: float, fill: str,
+                       text: str, element: Dict) -> str:
+        """创建文本SVG"""
+        margin = height * 0.1
+        font_size = height * 0.8
+        font_family = element.get('font_family', 'Arial')
+        if isinstance(font_family, bytes):
+            font_family = font_family.decode('utf-8')
+        
+        display_text = str(text)[:100].strip()
+        # 转义XML特殊字符
+        display_text = display_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        
+        opacity_str = f' opacity="{opacity:.3f}"' if opacity < 1 else ''
+        
+        return (
+            f'<svg id="{uuid}" class="{elem_type}" '
+            f'x="{left:.6f}" y="{(top - margin):.6f}" '
+            f'width="{width:.6f}" height="{(height + margin * 2):.6f}" '
+            f'overflow="visible"{opacity_str}>'
+            f'<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" '
+            f'fill="{fill}" font-size="{font_size:.6f}" font-family="{font_family}">'
+            f'{display_text}</text></svg>'
+        )
+
+
+# 测试代码
+if __name__ == "__main__":
+    print("="*60)
+    print("SVG Builder 测试（简化版）")
+    print("="*60)
+    
+    test_doc = {
+        'id': 'test_001',
+        'canvas_width': 800,
+        'canvas_height': 600,
+        'elements': [
+            {
+                'type': 'coloredBackground',
+                'left': 0.0,
+                'top': 0.0,
+                'width': 1.0,
+                'height': 1.0,
+                'color': [240, 240, 240],
+                'opacity': 1.0,
+            },
+            {
+                'type': 'imageElement',
+                'left': 0.1,
+                'top': 0.1,
+                'width': 0.3,
+                'height': 0.4,
+                'color': [255, 100, 100],
+                'opacity': 1.0,
+            },
+            {
+                'type': 'textElement',
+                'left': 0.5,
+                'top': 0.2,
+                'width': 0.4,
+                'height': 0.1,
+                'color': [100, 100, 255],
+                'opacity': 1.0,
+                'font_family': 'Arial',
+            },
+        ]
+    }
+    
+    print("\n测试1: Layout视图")
+    builder_layout = SVGBuilder(key='type', max_width=400, opacity=0.8)
+    svg_layout = builder_layout(test_doc)
+    with open('test_layout.svg', 'w', encoding='utf-8') as f:
+        f.write(svg_layout)
+    print(f"✓ 生成 {len(svg_layout)} 字符")
+    
+    print("\n测试2: Visual视图")
+    builder_visual = SVGBuilder(key='color', max_width=400, opacity=1.0, render_text=True)
+    svg_visual = builder_visual(test_doc)
+    with open('test_visual.svg', 'w', encoding='utf-8') as f:
+        f.write(svg_visual)
+    print(f"✓ 生成 {len(svg_visual)} 字符")
+    
+    print("\n" + "="*60)
+    print("✓ 测试完成！")
+    print("="*60)
+
+===== dataset.py =====
+"""
+修复版 Dataset - 确保所有值都在正确范围内
+"""
+
+import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+import numpy as np
+from typing import Dict, List, Optional
+
+
+class DesignLayoutDataset(Dataset):
+    """设计布局数据集 - 修复版"""
+    
+    def __init__(
+        self,
+        data_path: str,
+        split: str = 'train',
+        max_length: int = 20,
+        bins: int = 64,
+        min_font_freq: int = 500,
+    ):
+        self.data_path = Path(data_path)
+        self.split = split
+        self.max_length = max_length
+        self.bins = bins
+        self.min_font_freq = min_font_freq
+        
+        # 加载数据
+        json_file = self.data_path / f"{split}.json"
+        print(f"加载数据: {json_file}")
+        with open(json_file, 'r', encoding='utf-8') as f:
+            self.data = json.load(f)
+        
+        print(f"✓ 加载了 {len(self.data)} 个样本")
+        
+        # 加载词汇表
+        vocab_file = self.data_path.parent / "vocabulary.json"
+        with open(vocab_file, 'r', encoding='utf-8') as f:
+            self.vocabulary = json.load(f)
+        
+        # 构建查找表
+        self._build_lookups()
+    
+    def _build_lookups(self):
+        """构建字符串到索引的映射"""
+        print("\n构建查找表...")
+        
+        # === Type映射 - 关键修复：不包含特殊token ===
+        type_vocab = self.vocabulary['type']
+        if isinstance(type_vocab, list):
+            # 只映射实际的类型，索引从0开始
+            self.type_to_idx = {v: i for i, v in enumerate(type_vocab)}
+        else:
+            self.type_to_idx = {k: i for i, k in enumerate(type_vocab.keys())}
+        
+        # 添加未知类型映射到0
+        self.type_to_idx['<UNKNOWN>'] = 0
+        self.type_vocab_size = len(type_vocab)  # 不包含特殊token
+        
+        print(f"  Type词汇表: {self.type_vocab_size} 个类型")
+        print(f"  Type映射: {self.type_to_idx}")
+        
+        # === Canvas Width映射 ===
+        if 'canvas_width' in self.vocabulary:
+            width_vocab = self.vocabulary['canvas_width']
+            if isinstance(width_vocab, dict):
+                widths = sorted([int(k) for k in width_vocab.keys()])
+            elif isinstance(width_vocab, list):
+                widths = sorted([int(v) for v in width_vocab])
+            else:
+                widths = list(range(200, 2001, 100))
+            
+            self.width_to_idx = {w: i for i, w in enumerate(widths)}
+            self.idx_to_width = {i: w for i, w in enumerate(widths)}
+            self.idx_to_width[-1] = widths[0] if widths else 800  # 默认值
+            
+            self.width_vocab_size = len(widths)
+            print(f"  Canvas Width词汇表: {len(widths)} 个尺寸")
+        else:
+            self.width_to_idx = {}
+            self.idx_to_width = {0: 800}
+            self.width_vocab_size = 1
+        
+        # === Canvas Height映射 ===
+        if 'canvas_height' in self.vocabulary:
+            height_vocab = self.vocabulary['canvas_height']
+            if isinstance(height_vocab, dict):
+                heights = sorted([int(k) for k in height_vocab.keys()])
+            elif isinstance(height_vocab, list):
+                heights = sorted([int(v) for v in height_vocab])
+            else:
+                heights = list(range(200, 2001, 100))
+            
+            self.height_to_idx = {h: i for i, h in enumerate(heights)}
+            self.idx_to_height = {i: h for i, h in enumerate(heights)}
+            self.idx_to_height[-1] = heights[0] if heights else 600
+            
+            self.height_vocab_size = len(heights)
+            print(f"  Canvas Height词汇表: {len(heights)} 个尺寸")
+        else:
+            self.height_to_idx = {}
+            self.idx_to_height = {0: 600}
+            self.height_vocab_size = 1
+        
+        # === Font映射 ===
+        if 'font_family' in self.vocabulary:
+            font_vocab = self.vocabulary['font_family']
+            
+            if isinstance(font_vocab, dict):
+                filtered_fonts = [
+                    font for font, count in font_vocab.items() 
+                    if count >= self.min_font_freq
+                ]
+                filtered_fonts.sort()
+                self.font_to_idx = {font: i for i, font in enumerate(filtered_fonts)}
+            else:
+                self.font_to_idx = {v: i for i, v in enumerate(font_vocab)}
+            
+            # 关键修复：OOV索引应该是0（未知），而不是超出范围的值
+            self.font_vocab_size = len(self.font_to_idx)
+            # OOV映射到0
+            self.font_oov_idx = 0
+            
+            print(f"  Font词汇表: {self.font_vocab_size} 个字体 (OOV->0)")
+        else:
+            self.font_to_idx = {}
+            self.font_oov_idx = 0
+            self.font_vocab_size = 0
+        
+        # 反向映射
+        self.idx_to_type = {v: k for k, v in self.type_to_idx.items()}
+        self.idx_to_font = {v: k for k, v in self.font_to_idx.items()}
+    
+    def discretize(self, value: float, min_val: float = 0.0, max_val: float = 1.0) -> int:
+        """将连续值离散化到bins，确保结果在 [0, bins-1] 范围内"""
+        value = np.clip(value, min_val, max_val)
+        discrete = int((value - min_val) / (max_val - min_val) * (self.bins - 1))
+        return np.clip(discrete, 0, self.bins - 1)  # 确保不超出范围
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+        """获取单个样本 - 修复版，确保所有值都在范围内"""
+        item = self.data[idx]
+        length = min(item['length'], self.max_length)
+        
+        # Canvas尺寸
+        canvas_w = item['canvas_width']
+        canvas_h = item['canvas_height']
+        
+        width_idx = self.width_to_idx.get(canvas_w, 0)
+        height_idx = self.height_to_idx.get(canvas_h, 0)
+        
+        if width_idx == 0 and canvas_w not in self.width_to_idx:
+            closest_w = min(self.width_to_idx.keys(), 
+                          key=lambda x: abs(x - canvas_w)) if self.width_to_idx else 800
+            width_idx = self.width_to_idx.get(closest_w, 0)
+            
+        if height_idx == 0 and canvas_h not in self.height_to_idx:
+            closest_h = min(self.height_to_idx.keys(), 
+                          key=lambda x: abs(x - canvas_h)) if self.height_to_idx else 600
+            height_idx = self.height_to_idx.get(closest_h, 0)
+        
+        sample = {
+            'id': item['id'],
+            'length': torch.tensor([length], dtype=torch.long),
+            'canvas_width': torch.tensor([width_idx], dtype=torch.long),
+            'canvas_height': torch.tensor([height_idx], dtype=torch.long),
+        }
+        
+        # 位置和尺寸 - 确保在 [0, bins-1] 范围内
+        for key in ['left', 'top', 'width', 'height']:
+            values = [self.discretize(item[key][i]) for i in range(length)]
+            values += [0] * (self.max_length - length)
+            sample[key] = torch.tensor(values, dtype=torch.long).unsqueeze(-1)
+        
+        # 类型编码 - 确保在 [0, type_vocab_size-1] 范围内
+        type_ids = []
+        for i in range(length):
+            type_name = item['type'][i]
+            type_id = self.type_to_idx.get(type_name, 0)  # 未知类型映射到0
+            type_id = min(type_id, self.type_vocab_size - 1)  # 确保不超出范围
+            type_ids.append(type_id)
+        type_ids += [0] * (self.max_length - length)
+        sample['type'] = torch.tensor(type_ids, dtype=torch.long).unsqueeze(-1)
+        
+        # 不透明度 - 确保在 [0, 7] 范围内
+        if 'opacity' in item:
+            opacity_values = []
+            for i in range(length):
+                # 离散化到8个bins: 0.0-1.0 -> 0-7
+                opacity = np.clip(item['opacity'][i], 0.0, 1.0)
+                discrete_val = int(opacity * 7)
+                discrete_val = min(discrete_val, 7)  # 确保不超过7
+                opacity_values.append(discrete_val)
+            opacity_values += [0] * (self.max_length - length)
+            sample['opacity'] = torch.tensor(opacity_values, dtype=torch.long).unsqueeze(-1)
+        
+        # 颜色 - 确保每个通道在 [0, 15] 范围内
+        if 'color' in item:
+            colors = []
+            for i in range(length):
+                rgb = item['color'][i]
+                # 离散化每个通道：0-255 -> 0-15
+                discrete_rgb = []
+                for c in rgb:
+                    c = np.clip(c, 0, 255)
+                    discrete_c = int(c * 15 / 255)
+                    discrete_c = min(discrete_c, 15)  # 确保不超过15
+                    discrete_rgb.append(discrete_c)
+                colors.append(discrete_rgb)
+            for _ in range(self.max_length - length):
+                colors.append([0, 0, 0])
+            sample['color'] = torch.tensor(colors, dtype=torch.long)
+        
+        # 字体编码 - 确保在 [0, font_vocab_size-1] 范围内
+        if 'font_family' in item and self.font_to_idx:
+            font_ids = []
+            for i in range(length):
+                font_name = item['font_family'][i]
+                font_id = self.font_to_idx.get(font_name, self.font_oov_idx)
+                # 关键修复：确保不超出范围 [0, font_vocab_size-1]
+                font_id = np.clip(font_id, 0, self.font_vocab_size - 1)
+                font_ids.append(font_id)
+            
+            font_ids += [0] * (self.max_length - length)
+            sample['font_family'] = torch.tensor(font_ids, dtype=torch.long).unsqueeze(-1)
+        
+        # UUID - 仅用于demo，不参与训练
+        if 'uuid' in item:
+            # 简单存储原始值，但标记为demo_only
+            uuid_vals = item['uuid'][:length] + [''] * (self.max_length - length)
+            sample['uuid'] = uuid_vals  # 保持为字符串列表，不转tensor
+        
+        # 图像嵌入
+        if 'image_embedding' in item:
+            image_embs = item['image_embedding'][:length]
+            for _ in range(self.max_length - length):
+                image_embs.append([0.0] * 512)
+            sample['image_embedding'] = torch.tensor(image_embs, dtype=torch.float32)
+        
+        # 文本嵌入
+        if 'text_embedding' in item:
+            text_embs = item['text_embedding'][:length]
+            for _ in range(self.max_length - length):
+                text_embs.append([0.0] * 512)
+            sample['text_embedding'] = torch.tensor(text_embs, dtype=torch.float32)
+        
+        return sample
+    
+    def get_input_columns(self) -> Dict:
+        """
+        生成input_columns配置
+        关键：input_dim 是实际的类别数，不包含Encoder会添加的特殊token
+        """
+        input_columns = {
+            'id': {
+                'demo_only': True,
+                'shape': [1],
+                'is_sequence': False,
+                'primary_label': None,
+            },
+            'length': {
+                'type': 'categorical',
+                'input_dim': 50,
+                'shape': [1],
+                'is_sequence': False,
+                'primary_label': None,
+            },
+            'canvas_width': {
+                'type': 'categorical',
+                'input_dim': self.width_vocab_size,
+                'shape': [1],
+                'is_sequence': False,
+                'primary_label': None,
+            },
+            'canvas_height': {
+                'type': 'categorical',
+                'input_dim': self.height_vocab_size,
+                'shape': [1],
+                'is_sequence': False,
+                'primary_label': None,
+            },
+            'type': {
+                'type': 'categorical',
+                'input_dim': self.type_vocab_size,  # 实际类别数
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': 0,
+            },
+            'left': {
+                'type': 'categorical',
+                'input_dim': self.bins,  # 64
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'top': {
+                'type': 'categorical',
+                'input_dim': self.bins,  # 64
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'width': {
+                'type': 'categorical',
+                'input_dim': self.bins,  # 64
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'height': {
+                'type': 'categorical',
+                'input_dim': self.bins,  # 64
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'opacity': {
+                'type': 'categorical',
+                'input_dim': 8,  # 0-7
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'color': {
+                'type': 'categorical',
+                'input_dim': 16,  # 0-15 每个通道
+                'shape': [3],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'image_embedding': {
+                'type': 'numerical',
+                'shape': [512],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+            'text_embedding': {
+                'type': 'numerical',
+                'shape': [512],
+                'is_sequence': True,
+                'primary_label': None,
+            },
+        }
+        
+        # 只有在有字体数据时才添加
+        if self.font_vocab_size > 0:
+            input_columns['font_family'] = {
+                'type': 'categorical',
+                'input_dim': self.font_vocab_size,
+                'shape': [1],
+                'is_sequence': True,
+                'primary_label': None,
+            }
+        
+        # UUID 仅用于演示，不参与训练
+        input_columns['uuid'] = {
+            'demo_only': True,
+            'type': 'categorical',
+            'input_dim': 1215,
+            'shape': [1],
+            'is_sequence': True,
+            'primary_label': None,
+        }
+        
+        return input_columns
+
+
+def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    """批处理函数"""
+    keys = batch[0].keys()
+    collated = {}
+    
+    for key in keys:
+        if key in ['id', 'uuid']:  # id和uuid保持为列表
+            collated[key] = [item[key] for item in batch]
+        else:
+            collated[key] = torch.stack([item[key] for item in batch])
+    
+    return collated
+
+
+def create_dataloader(
+    data_path: str,
+    split: str = 'train',
+    batch_size: int = 32,
+    shuffle: bool = True,
+    num_workers: int = 4,
+    **dataset_kwargs
+) -> DataLoader:
+    """创建数据加载器"""
+    dataset = DesignLayoutDataset(data_path, split=split, **dataset_kwargs)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=True,
+    )
+    
+    return dataloader
+

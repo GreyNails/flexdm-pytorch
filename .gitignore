@@ -11,6 +11,7 @@ pyproject.toml
 *gcp*
 data/
 chechpoints/
+checkpoints/
 scripts/outputs/
 scripts/outputs_v1/
 logs/

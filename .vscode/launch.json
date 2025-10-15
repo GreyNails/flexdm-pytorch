@@ -88,8 +88,8 @@
                 "--checkpoint", "/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints/retrain/best.pth",
                 "--config", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/config/train_config.json",
                 "--device", "cuda",
-                "--save_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints_v2",
-                "--log_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs_v2"
+                "--save_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints/checkpoints_v2",
+                "--log_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs/logs_v2"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0",

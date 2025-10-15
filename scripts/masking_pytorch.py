@@ -161,18 +161,22 @@ def filter_padding(
     mask: torch.Tensor
 ) -> Dict[str, torch.Tensor]:
     """
-    将padding位置设置为NULL
+    将padding位置设置为NULL，并根据loss_condition mask掉不需要的特征
+    
+    例如：
+    - svgElement, imageElement, maskElement 不需要 text_embedding -> 设为NULL
+    - textElement 不需要 image_embedding -> 设为NULL
     
     Args:
         inputs: 输入字典
         input_columns: 列配置
-        mask: (B, S) 有效位置mask
+        mask: (B, S) 有效位置mask (True表示有效位置)
     
     Returns:
         处理后的输入
     """
     modified_inputs = {}
-    unused_mask = ~mask  # padding位置
+    unused_mask = ~mask  # padding位置 (True表示需要mask的位置)
     
     for key, column in input_columns.items():
         # ⭐ 跳过demo_only字段（如uuid）
@@ -195,35 +199,46 @@ def filter_padding(
             # 检查loss_condition
             if 'loss_condition' in column:
                 cond = column['loss_condition']
-                # 某些类型的元素不需要这个特征
+                # cond_mask标记所有"不需要这个特征"的位置
                 cond_mask = torch.zeros_like(mask, dtype=torch.bool)
                 
-                # 获取条件字段的值
+                # 获取type字段的值
                 if cond['key'] in inputs and torch.is_tensor(inputs[cond['key']]):
                     type_values = inputs[cond['key']]  # (B, S, 1)
                     if type_values.dim() == 3:
                         type_values = type_values.squeeze(-1)  # (B, S)
                     
-                    # 根据loss_condition的mask设置
+                    # 使用预定义的mask数组
                     if 'mask' in cond:
-                        # cond['mask']是一个列表，指示每个类别是否需要这个特征
+                        # cond['mask'][i] = True 表示type索引为i的元素"需要"这个特征
                         loss_mask_tensor = torch.tensor(
                             cond['mask'], 
                             dtype=torch.bool, 
                             device=type_values.device
                         )
-                        # 使用gather获取每个位置对应的mask值
+                        
                         # 确保type_values在有效范围内
-                        type_values = torch.clamp(type_values, 0, len(cond['mask']) - 1)
-                        cond_mask = ~loss_mask_tensor[type_values]
+                        type_values_clamped = torch.clamp(
+                            type_values, 0, len(cond['mask']) - 1
+                        )
+                        
+                        # 对每个位置，根据其type查找是否需要这个特征
+                        # need_feature[i, j] = loss_mask_tensor[type_values[i, j]]
+                        need_feature = loss_mask_tensor[type_values_clamped]
+                        
+                        # cond_mask标记"不需要"的位置
+                        cond_mask = ~need_feature
                 
+                # 合并：padding位置 OR 不需要这个特征的位置
                 mask_ = cond_mask | unused_mask
             else:
+                # 没有loss_condition，只mask padding
                 mask_ = unused_mask
             
-            # 应用UNUSED token
+            # 应用UNUSED token (设为NULL_VALUE)
             modified_inputs[key] = apply_token(input_val, column, mask_, 'unused')
         else:
+            # 非序列特征保持原样
             modified_inputs[key] = input_val
     
     return modified_inputs

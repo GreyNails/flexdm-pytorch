@@ -1,6 +1,6 @@
 import os
 
-def merge_files(folder_path, output_file="merged_files_pt_fd.txt"):
+def merge_files(folder_path, output_file="merged_files_pt_fd_v2.txt"):
     """
     将指定文件夹中的.py、.yml、.json文件合并到一个txt文件中
     每个文件内容前会加上文件名作为开头
@@ -53,5 +53,5 @@ def merge_files(folder_path, output_file="merged_files_pt_fd.txt"):
 
 if __name__ == "__main__":
     # 在这里替换为你的文件夹路径
-    target_folder = "/home/dell/Project-HCL/BaseLine/flexdm_pt/prompt/fd_pt"  # 可以是相对路径或绝对路径
+    target_folder = "/home/dell/Project-HCL/BaseLine/flexdm_pt/prompt/fd_pt_v2"  # 可以是相对路径或绝对路径
     merge_files(target_folder)

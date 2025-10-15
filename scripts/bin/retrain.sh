@@ -11,8 +11,8 @@ PYTHON_PATH="/home/dell/anaconda3/envs/ptfd311/bin/python"
 SCRIPT_PATH="/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/train_pytorch_improved.py"
 DATA_DIR="/storage/HCL_data/crello_original/to_json"
 CONFIG_PATH="/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/config/train_config.json"
-SAVE_DIR="/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints/retrain"
-LOG_DIR="/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs/retrain"
+SAVE_DIR="/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints/retrain_1016"
+LOG_DIR="/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs/retrain_1016"
 
 # 打印运行信息
 echo "开始运行训练脚本..."

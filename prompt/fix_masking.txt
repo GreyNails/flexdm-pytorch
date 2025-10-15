@@ -1,0 +1,4 @@
+上述为我的项目原始tensorflow版本代码，请对我下面pytorch版本进行修改：参考masking.py中的filter_padding，修改我现在pytorch版本代码中的masking_pytorch.py中的fillter_padding:对于svgElement，
+
+imageElement，coloredBackground，maskElement padding 元素mask 掉test_embedding部分，对于textElement元素mask掉image_embedding部分
+

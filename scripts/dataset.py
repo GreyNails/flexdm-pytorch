@@ -272,6 +272,11 @@ class DesignLayoutDataset(Dataset):
         生成input_columns配置
         关键：input_dim 是实际的类别数，不包含Encoder会添加的特殊token
         """
+            # image_embedding需要的类型：svgElement(1), imageElement(3), maskElement(5)
+        image_mask = [False, True, False, True, False, True]  # 对应索引0-5
+        
+        # text_embedding需要的类型：textElement(2)
+        text_mask = [False, False, True, False, False, False]  # 对应索引0-5
         input_columns = {
             'id': {
                 'demo_only': True,
@@ -354,12 +359,22 @@ class DesignLayoutDataset(Dataset):
                 'shape': [512],
                 'is_sequence': True,
                 'primary_label': None,
+                'loss_condition': {
+                'key': 'type',
+                'values': ['svgElement', 'imageElement', 'maskElement'],
+                'mask': image_mask,  # ⭐ 添加mask数组
+            }
             },
             'text_embedding': {
                 'type': 'numerical',
                 'shape': [512],
                 'is_sequence': True,
                 'primary_label': None,
+                'loss_condition': {
+                'key': 'type',
+                'values': ['textElement'],
+                'mask': text_mask,  # ⭐ 添加mask数组
+            }
             },
         }
         
@@ -371,6 +386,11 @@ class DesignLayoutDataset(Dataset):
                 'shape': [1],
                 'is_sequence': True,
                 'primary_label': None,
+                'loss_condition': {
+                'key': 'type',
+                'values': ['textElement'],
+                'mask': text_mask,
+            }
             }
         
         # UUID 仅用于演示，不参与训练

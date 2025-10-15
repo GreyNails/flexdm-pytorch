@@ -48,15 +48,31 @@ class DesignLayoutDataset(Dataset):
         print("\n构建查找表...")
         
         # === Type映射 - 关键修复：不包含特殊token ===
-        type_vocab = self.vocabulary['type']
-        if isinstance(type_vocab, list):
-            # 只映射实际的类型，索引从0开始
-            self.type_to_idx = {v: i for i, v in enumerate(type_vocab)}
-        else:
-            self.type_to_idx = {k: i for i, k in enumerate(type_vocab.keys())}
+        # type_vocab = self.vocabulary['type']
+
+        type_vocab = ['','svgElement', 'textElement', 'imageElement', 'coloredBackground', 'maskElement']
+
+
+        # if isinstance(type_vocab, list):
+        #     # 只映射实际的类型，索引从0开始
+        #     self.type_to_idx = {v: i for i, v in enumerate(type_vocab)}
+        # else:
+        #     self.type_to_idx = {k: i for i, k in enumerate(type_vocab.keys())}
+        
+        self.type_to_idx={
+            '':0,
+            'svgElement': 1,
+            'textElement': 2,
+            'imageElement': 3,
+            'coloredBackground': 4,
+            'maskElement': 5
+            }
+
+
+
         
         # 添加未知类型映射到0
-        self.type_to_idx['<UNKNOWN>'] = 0
+        # self.type_to_idx['<UNKNOWN>'] = 0
         self.type_vocab_size = len(type_vocab)  # 不包含特殊token
         
         print(f"  Type词汇表: {self.type_vocab_size} 个类型")

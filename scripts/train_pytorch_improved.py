@@ -142,7 +142,7 @@ class MFPTrainer:
                     target_flat = target.reshape(B * S * num_feat).long()
                     
                     # ⭐ 将超出范围的目标值clip到有效范围
-                    target_flat = torch.clamp(target_flat, 0, input_dim - 1)
+                    # target_flat = torch.clamp(target_flat, 0, input_dim - 1)
                     
                     # 计算损失
                     loss = F.cross_entropy(pred_flat, target_flat, reduction='none')
@@ -160,7 +160,7 @@ class MFPTrainer:
                     target_flat = target.reshape(B * S).long()
                     
                     # ⭐ 将超出范围的目标值clip到有效范围
-                    target_flat = torch.clamp(target_flat, 0, input_dim - 1)
+                    # target_flat = torch.clamp(target_flat, 0, input_dim - 1)
                     
                     # 计算损失
                     loss = F.cross_entropy(pred_flat, target_flat, reduction='none')

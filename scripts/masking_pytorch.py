@@ -66,7 +66,7 @@ def get_seq_mask(length: torch.Tensor, max_len: int = None) -> torch.Tensor:
         length = length.squeeze(-1)
     
     # 转换为one-based
-    length = length + 1
+    # length = length + 1
     
     if max_len is None:
         max_len = length.max().item()
@@ -467,7 +467,7 @@ def preprocess_for_train(
             # 默认使用random
             modified_inputs, masks = random_masking(filtered_inputs, input_columns, seq_mask)
     
-    return filtered_inputs, modified_inputs, masks
+    return inputs, modified_inputs, masks
 
 
 def preprocess_for_test(

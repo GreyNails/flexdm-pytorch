@@ -1,0 +1,13 @@
+<svg width="128" height="47" viewBox="0 0 1 1" style="background-color: #FFF" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<rect id="elem_0" class="imageElement" x="0.000000" y="0.000000" width="1.000000" height="1.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<rect id="elem_1" class="<UNKNOWN>" x="0.000000" y="0.000000" width="1.000000" height="1.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<rect id="elem_2" class="maskElement" x="0.000000" y="0.079365" width="0.333333" height="0.492063" fill="rgb(0,0,0)" opacity="1.000"/>
+<rect id="elem_3" class="<UNKNOWN>" x="0.000000" y="0.000000" width="0.000000" height="0.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<rect id="elem_4" class="<UNKNOWN>" x="0.000000" y="0.206349" width="0.000000" height="0.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<svg id="elem_5" class="textElement" x="0.079365" y="0.331746" width="0.206349" height="0.019048" overflow="visible"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="rgb(0,0,0)" font-size="0.012698" font-family="Arial">TEXT TEXT TEXT</text></svg>
+<rect id="elem_6" class="<UNKNOWN>" x="0.000000" y="0.682540" width="0.000000" height="0.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<svg id="elem_7" class="textElement" x="0.063492" y="0.331746" width="0.317460" height="0.019048" overflow="visible"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="rgb(221,51,51)" font-size="0.012698" font-family="Arial">TEXT TEXT TEXT</text></svg>
+<rect id="elem_8" class="<UNKNOWN>" x="0.000000" y="0.873016" width="0.000000" height="0.000000" fill="rgb(0,0,0)" opacity="1.000"/>
+<svg id="elem_9" class="textElement" x="0.079365" y="0.871429" width="0.206349" height="0.019048" overflow="visible"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="rgb(255,255,255)" font-size="0.012698" font-family="Arial">TEXT TEXT TEXT</text></svg>
+<rect id="elem_10" class="<UNKNOWN>" x="0.000000" y="0.000000" width="0.000000" height="0.000000" fill="rgb(0,0,0)" opacity="0.000"/>
+</svg>

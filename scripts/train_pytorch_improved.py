@@ -1,6 +1,6 @@
 """
 完整的MFP训练代码 - 严格对齐TensorFlow版本
-包含正确的Masking机制
+包含正确的Masking机制和Loss曲线绘制
 """
 
 import torch
@@ -14,8 +14,13 @@ import argparse
 import json
 from tqdm import tqdm
 import time
-from typing import Dict
+from typing import Dict, List
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
+import seaborn as sns
+sns.set_style('darkgrid')
 
 from dataset import create_dataloader
 from models_pytorch import MFP
@@ -27,7 +32,7 @@ from masking_pytorch import (
 
 
 class MFPTrainer:
-    """MFP模型训练器（包含Masking）"""
+    """MFP模型训练器（包含Masking和Loss曲线绘制）"""
     
     def __init__(
         self,
@@ -82,6 +87,8 @@ class MFPTrainer:
         # 目录设置
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.plot_dir = self.save_dir / 'plots'
+        self.plot_dir.mkdir(exist_ok=True)
         
         # TensorBoard
         self.writer = SummaryWriter(log_dir)
@@ -90,6 +97,16 @@ class MFPTrainer:
         self.start_epoch = 0
         self.best_val_loss = float('inf')
         self.global_step = 0
+        
+        # 🎨 Loss历史记录 - 用于绘图
+        self.loss_history = {
+            'epochs': [],
+            'train_loss': [],
+            'val_loss': [],
+            'train_losses_detailed': {},  # 每个任务的训练损失
+            'val_losses_detailed': {},    # 每个任务的验证损失
+            'learning_rates': [],
+        }
         
         # 恢复训练
         if resume_path and Path(resume_path).exists():
@@ -141,9 +158,6 @@ class MFPTrainer:
                     pred_flat = pred.reshape(B * S * num_feat, C)
                     target_flat = target.reshape(B * S * num_feat).long()
                     
-                    # ⭐ 将超出范围的目标值clip到有效范围
-                    # target_flat = torch.clamp(target_flat, 0, input_dim - 1)
-                    
                     # 计算损失
                     loss = F.cross_entropy(pred_flat, target_flat, reduction='none')
                     loss = loss.reshape(B, S, num_feat)
@@ -158,9 +172,6 @@ class MFPTrainer:
                     # 展平
                     pred_flat = pred.reshape(B * S, C)
                     target_flat = target.reshape(B * S).long()
-                    
-                    # ⭐ 将超出范围的目标值clip到有效范围
-                    # target_flat = torch.clamp(target_flat, 0, input_dim - 1)
                     
                     # 计算损失
                     loss = F.cross_entropy(pred_flat, target_flat, reduction='none')
@@ -190,7 +201,140 @@ class MFPTrainer:
         
         losses['total_loss'] = total_loss
         return losses
-
+    
+    def plot_loss_curves(self, save_path: str = None):
+        """
+        绘制损失曲线
+        
+        Args:
+            save_path: 保存路径，如果为None则保存到默认位置
+        """
+        if len(self.loss_history['epochs']) == 0:
+            return
+        
+        # 创建子图
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle('Training Progress', fontsize=16, fontweight='bold')
+        
+        # 1. 主要损失曲线（训练vs验证）
+        ax1 = axes[0, 0]
+        ax1.plot(self.loss_history['epochs'], self.loss_history['train_loss'], 
+                'b-', label='Train Loss', linewidth=2)
+        ax1.plot(self.loss_history['epochs'], self.loss_history['val_loss'], 
+                'r-', label='Val Loss', linewidth=2)
+        ax1.fill_between(self.loss_history['epochs'], 
+                        self.loss_history['train_loss'], 
+                        self.loss_history['val_loss'], 
+                        alpha=0.2)
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss')
+        ax1.set_title('Training vs Validation Loss')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 标记最佳验证损失
+        if self.loss_history['val_loss']:
+            best_epoch = np.argmin(self.loss_history['val_loss'])
+            best_val_loss = self.loss_history['val_loss'][best_epoch]
+            ax1.plot(self.loss_history['epochs'][best_epoch], best_val_loss, 
+                    'g*', markersize=15, label=f'Best Val Loss: {best_val_loss:.4f}')
+            ax1.legend()
+        
+        # 2. 学习率曲线
+        ax2 = axes[0, 1]
+        ax2.plot(self.loss_history['epochs'], self.loss_history['learning_rates'], 
+                'g-', linewidth=2)
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Learning Rate')
+        ax2.set_title('Learning Rate Schedule')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_yscale('log')
+        
+        # 3. 每个任务的训练损失
+        ax3 = axes[1, 0]
+        for key in self.loss_history['train_losses_detailed'].keys():
+            if key != 'total_loss' and len(self.loss_history['train_losses_detailed'][key]) > 0:
+                ax3.plot(self.loss_history['epochs'], 
+                        self.loss_history['train_losses_detailed'][key], 
+                        label=key.replace('_loss', ''), linewidth=1.5, alpha=0.8)
+        ax3.set_xlabel('Epoch')
+        ax3.set_ylabel('Loss')
+        ax3.set_title('Training Loss by Task')
+        ax3.legend(loc='upper right', fontsize=8)
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. 每个任务的验证损失
+        ax4 = axes[1, 1]
+        for key in self.loss_history['val_losses_detailed'].keys():
+            if key != 'total_loss' and len(self.loss_history['val_losses_detailed'][key]) > 0:
+                ax4.plot(self.loss_history['epochs'], 
+                        self.loss_history['val_losses_detailed'][key], 
+                        label=key.replace('_loss', ''), linewidth=1.5, alpha=0.8)
+        ax4.set_xlabel('Epoch')
+        ax4.set_ylabel('Loss')
+        ax4.set_title('Validation Loss by Task')
+        ax4.legend(loc='upper right', fontsize=8)
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # 保存图片
+        if save_path is None:
+            save_path = self.plot_dir / f'loss_curves_epoch_{len(self.loss_history["epochs"])}.png'
+        plt.savefig(save_path, dpi=100, bbox_inches='tight')
+        plt.close()
+        
+        print(f"📊 Loss曲线已保存至: {save_path}")
+    
+    def plot_loss_comparison(self):
+        """绘制训练和验证损失的对比图（简化版）"""
+        if len(self.loss_history['epochs']) == 0:
+            return
+        
+        plt.figure(figsize=(10, 6))
+        
+        # 绘制损失曲线
+        plt.plot(self.loss_history['epochs'], self.loss_history['train_loss'], 
+                'b-', label='Train Loss', linewidth=2, alpha=0.8)
+        plt.plot(self.loss_history['epochs'], self.loss_history['val_loss'], 
+                'r-', label='Val Loss', linewidth=2, alpha=0.8)
+        
+        # 添加最佳点标记
+        if self.loss_history['val_loss']:
+            best_epoch = np.argmin(self.loss_history['val_loss'])
+            best_val_loss = self.loss_history['val_loss'][best_epoch]
+            plt.scatter(self.loss_history['epochs'][best_epoch], best_val_loss, 
+                       color='green', s=100, zorder=5, 
+                       label=f'Best: {best_val_loss:.4f}')
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training Progress', fontsize=14, fontweight='bold')
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        
+        # 保存简化版图片
+        save_path = self.plot_dir / 'loss_curve_simple.png'
+        plt.savefig(save_path, dpi=100, bbox_inches='tight')
+        plt.close()
+    
+    def update_loss_history(self, epoch: int, train_losses: Dict, val_losses: Dict):
+        """更新损失历史记录"""
+        self.loss_history['epochs'].append(epoch)
+        self.loss_history['train_loss'].append(train_losses['total_loss'])
+        self.loss_history['val_loss'].append(val_losses['total_loss'])
+        self.loss_history['learning_rates'].append(self.optimizer.param_groups[0]['lr'])
+        
+        # 更新详细损失
+        for key, value in train_losses.items():
+            if key not in self.loss_history['train_losses_detailed']:
+                self.loss_history['train_losses_detailed'][key] = []
+            self.loss_history['train_losses_detailed'][key].append(value)
+        
+        for key, value in val_losses.items():
+            if key not in self.loss_history['val_losses_detailed']:
+                self.loss_history['val_losses_detailed'][key] = []
+            self.loss_history['val_losses_detailed'][key].append(value)
     
     def train_epoch(self, epoch: int):
         """训练一个epoch（包含Masking）"""
@@ -312,7 +456,7 @@ class MFPTrainer:
         return avg_losses
     
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
-        """保存checkpoint"""
+        """保存checkpoint（包含loss历史）"""
         checkpoint = {
             'epoch': epoch,
             'global_step': self.global_step,
@@ -322,6 +466,7 @@ class MFPTrainer:
             'best_val_loss': self.best_val_loss,
             'val_loss': val_loss,
             'config': self.config,
+            'loss_history': self.loss_history,  # 🎨 保存损失历史
         }
         
         # 保存最新模型
@@ -331,9 +476,13 @@ class MFPTrainer:
         if is_best:
             torch.save(checkpoint, self.save_dir / 'best.pth')
             print(f"✓ 保存最佳模型 (epoch {epoch}, val_loss: {val_loss:.4f})")
+        
+        # 🎨 保存损失历史到JSON（方便外部分析）
+        with open(self.save_dir / 'loss_history.json', 'w') as f:
+            json.dump(self.loss_history, f, indent=2)
     
     def load_checkpoint(self, checkpoint_path: str):
-        """加载checkpoint"""
+        """加载checkpoint（包含loss历史）"""
         print(f"加载checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
@@ -345,12 +494,17 @@ class MFPTrainer:
         self.global_step = checkpoint.get('global_step', 0)
         self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         
+        # 🎨 恢复损失历史
+        if 'loss_history' in checkpoint:
+            self.loss_history = checkpoint['loss_history']
+            print(f"✓ 恢复损失历史 ({len(self.loss_history['epochs'])} epochs)")
+        
         print(f"✓ 恢复训练从 epoch {self.start_epoch}")
     
     def train(self):
-        """完整训练流程"""
+        """完整训练流程（包含loss曲线绘制）"""
         print("\n" + "="*60)
-        print("开始训练（包含Masking机制）")
+        print("开始训练（包含Masking机制和Loss曲线绘制）")
         print("="*60)
         
         for epoch in range(self.start_epoch, self.num_epochs):
@@ -364,6 +518,9 @@ class MFPTrainer:
                 val_losses = self.validate(epoch)
             else:
                 val_losses = {'total_loss': float('inf')}
+            
+            # 🎨 更新损失历史
+            self.update_loss_history(epoch, train_losses, val_losses)
             
             # 学习率调度
             self.scheduler.step(val_losses['total_loss'])
@@ -385,16 +542,125 @@ class MFPTrainer:
                 self.best_val_loss = val_losses['total_loss']
             
             self.save_checkpoint(epoch, val_losses['total_loss'], is_best)
+            
+            # 🎨 定期绘制损失曲线
+            if epoch % 5 == 0 or epoch == self.num_epochs - 1 or is_best:
+                self.plot_loss_curves()
+                self.plot_loss_comparison()
+        
+        # 🎨 训练结束，绘制最终损失曲线
+        print("\n📊 绘制最终损失曲线...")
+        self.plot_loss_curves(self.plot_dir / 'final_loss_curves.png')
+        self.plot_loss_comparison()
         
         print("\n" + "="*60)
         print("训练完成!")
         print(f"最佳验证损失: {self.best_val_loss:.4f}")
+        print(f"损失曲线已保存至: {self.plot_dir}")
         print("="*60)
         self.writer.close()
 
 
+def visualize_training_summary(checkpoint_path: str):
+    """从checkpoint可视化训练总结"""
+    print("\n📊 生成训练总结...")
+    
+    # 加载checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    loss_history = checkpoint.get('loss_history', {})
+    
+    if not loss_history or not loss_history.get('epochs'):
+        print("❌ 没有找到损失历史数据")
+        return
+    
+    # 创建总结图
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle('Training Summary', fontsize=16, fontweight='bold')
+    
+    # 1. 损失曲线
+    ax = axes[0, 0]
+    ax.plot(loss_history['epochs'], loss_history['train_loss'], 'b-', label='Train', linewidth=2)
+    ax.plot(loss_history['epochs'], loss_history['val_loss'], 'r-', label='Val', linewidth=2)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss')
+    ax.set_title('Loss Curves')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 2. 损失差距
+    ax = axes[0, 1]
+    gap = np.array(loss_history['val_loss']) - np.array(loss_history['train_loss'])
+    ax.plot(loss_history['epochs'], gap, 'g-', linewidth=2)
+    ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Gap (Val - Train)')
+    ax.set_title('Generalization Gap')
+    ax.grid(True, alpha=0.3)
+    
+    # 3. 学习率
+    ax = axes[0, 2]
+    ax.plot(loss_history['epochs'], loss_history['learning_rates'], 'orange', linewidth=2)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Learning Rate')
+    ax.set_title('Learning Rate Schedule')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+    
+    # 4. 损失分布（箱线图）
+    ax = axes[1, 0]
+    data_to_plot = [loss_history['train_loss'][-20:], loss_history['val_loss'][-20:]]
+    bp = ax.boxplot(data_to_plot, labels=['Train', 'Val'])
+    ax.set_ylabel('Loss')
+    ax.set_title('Loss Distribution (Last 20 Epochs)')
+    ax.grid(True, alpha=0.3)
+    
+    # 5. 收敛速度
+    ax = axes[1, 1]
+    if len(loss_history['val_loss']) > 1:
+        convergence_rate = np.diff(loss_history['val_loss'])
+        ax.plot(loss_history['epochs'][1:], convergence_rate, 'purple', linewidth=1.5)
+        ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss Change')
+        ax.set_title('Convergence Rate (Val Loss)')
+        ax.grid(True, alpha=0.3)
+    
+    # 6. 最佳模型信息
+    ax = axes[1, 2]
+    ax.axis('off')
+    best_epoch = np.argmin(loss_history['val_loss'])
+    best_val_loss = loss_history['val_loss'][best_epoch]
+    best_train_loss = loss_history['train_loss'][best_epoch]
+    
+    info_text = f"""
+    Best Model Information:
+    ----------------------
+    Epoch: {loss_history['epochs'][best_epoch]}
+    Val Loss: {best_val_loss:.4f}
+    Train Loss: {best_train_loss:.4f}
+    Gap: {best_val_loss - best_train_loss:.4f}
+    
+    Final Model:
+    -----------
+    Epoch: {loss_history['epochs'][-1]}
+    Val Loss: {loss_history['val_loss'][-1]:.4f}
+    Train Loss: {loss_history['train_loss'][-1]:.4f}
+    """
+    ax.text(0.1, 0.5, info_text, fontsize=11, family='monospace', 
+            verticalalignment='center')
+    
+    plt.tight_layout()
+    
+    # 保存
+    save_path = Path(checkpoint_path).parent / 'training_summary.png'
+    plt.savefig(save_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    
+    print(f"✓ 训练总结已保存至: {save_path}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Train MFP Model with Masking')
+    parser = argparse.ArgumentParser(description='Train MFP Model with Masking and Loss Visualization')
     
     parser.add_argument('--data_dir', type=str, required=True)
     parser.add_argument('--config', type=str, default='config/train_config.json')
@@ -405,8 +671,15 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--visualize_only', type=str, default=None, 
+                       help='仅可视化已有的checkpoint')
     
     args = parser.parse_args()
+    
+    # 如果只是可视化
+    if args.visualize_only:
+        visualize_training_summary(args.visualize_only)
+        return
     
     # 加载配置
     with open(args.config, 'r') as f:
@@ -467,6 +740,11 @@ def main():
     
     # 开始训练
     trainer.train()
+    
+    # 生成最终的训练总结
+    final_checkpoint = Path(args.save_dir) / 'best.pth'
+    if final_checkpoint.exists():
+        visualize_training_summary(str(final_checkpoint))
 
 
 if __name__ == "__main__":

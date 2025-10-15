@@ -78,6 +78,26 @@
             "python": "/home/dell/anaconda3/envs/ptfd311/bin/python",
         },
         {
+            "name": "MFP: Train (Basic)_v2_pos",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/train_pytorch_improved.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--data_dir", "/storage/HCL_data/crello_original/to_json",
+                "--config", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/config/train_config_pos.json",
+                "--device", "cuda",
+                "--save_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/checkpoints_v2_pos",
+                "--log_dir", "/home/dell/Project-HCL/BaseLine/flexdm_pt/scripts/logs_v2_pos"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "python": "/home/dell/anaconda3/envs/ptfd311/bin/python",
+        },
+        {
             "name": "inference_v2",
             "type": "python",
             "request": "launch",
